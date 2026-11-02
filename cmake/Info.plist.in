@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleExecutable</key>
+	<string>@FFX_BUNDLE_EXECUTABLE@</string>
+	<key>CFBundleIdentifier</key>
+	<string>functionalfx.@FFX_NAME@</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>@FFX_NAME@</string>
+	<key>CFBundlePackageType</key>
+	<string>@FFX_BUNDLE_TYPE@</string>
+	<key>CFBundleSignature</key>
+	<string>@FFX_BUNDLE_SIGNATURE@</string>
+	<key>CFBundleVersion</key>
+	<string>@PROJECT_VERSION@</string>
+</dict>
+</plist>

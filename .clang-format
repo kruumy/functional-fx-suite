@@ -1,0 +1,7 @@
+BasedOnStyle: Microsoft
+NamespaceIndentation: All
+PointerAlignment: Left
+InsertBraces: true
+SortIncludes:
+  Enabled: true
+IncludeBlocks: Merge

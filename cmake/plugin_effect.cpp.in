@@ -1,0 +1,10 @@
+#include "effects/@FFX_EFFECT@.hpp"
+#include "hosts/plugin_effect.hpp"
+
+namespace functional_fx_suite::hosts::plugin_effect
+{
+    const core::effect& get()
+    {
+        return effects::@FFX_EFFECT@::get();
+    }
+} // namespace functional_fx_suite::hosts::plugin_effect

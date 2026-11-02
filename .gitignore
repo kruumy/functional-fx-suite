@@ -1,0 +1,9 @@
+# Adobe's SDK license forbids redistribution; each developer downloads it
+external/AfterEffectsSDK/
+
+build*/
+.cache/
+.vs/
+.vscode/
+compile_commands.json
+CMakeUserPresets.json
