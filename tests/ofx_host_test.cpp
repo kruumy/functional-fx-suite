@@ -476,12 +476,22 @@ namespace functional_fx_suite::tests::ofx_host_test
         const OfxStatus needed_status = plugin->mainEntry(kOfxImageEffectActionGetFramesNeeded, h, ah, handle(needed));
         const auto& ranges =
             needed.values[std::string("OfxImageClipPropFrameRange_") + kOfxImageEffectSimpleSourceClipName];
-        bool ranges_ok = ranges.size() == 2 * (offsets.size() + 1);
-        for (std::size_t i = 0; ranges_ok && i < ranges.size(); ++i)
+        // the ranges must cover exactly the current frame and every offset
+        std::set<int> wanted(offsets.begin(), offsets.end());
+        wanted.insert(0);
+        std::set<int> covered;
+        bool ranges_ok = ranges.size() % 2 == 0;
+        for (std::size_t i = 0; ranges_ok && i < ranges.size(); i += 2)
         {
-            const double want = FRAME + (i < 2 ? 0 : offsets[i / 2 - 1]);
-            ranges_ok = std::get<double>(ranges[i]) == want;
+            const double lo = std::get<double>(ranges[i]) - FRAME;
+            const double hi = std::get<double>(ranges[i + 1]) - FRAME;
+            ranges_ok = lo <= hi;
+            for (int n = static_cast<int>(lo); ranges_ok && n <= static_cast<int>(hi); ++n)
+            {
+                covered.insert(n);
+            }
         }
+        ranges_ok = ranges_ok && covered == wanted;
         check(reference->frame_offsets != nullptr ? needed_status == kOfxStatOK && ranges_ok
                                                   : needed_status == kOfxStatReplyDefault,
               std::format("{}: frames needed", label));

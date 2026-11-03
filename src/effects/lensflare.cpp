@@ -223,9 +223,11 @@ namespace functional_fx_suite::effects::lensflare
         double sum = 0.0;
         double total = 0.0;
         const int r = static_cast<int>(std::ceil(radius));
-        for (int y = static_cast<int>(std::floor(hy)) - r; y <= static_cast<int>(std::floor(hy)) + r; ++y)
+        // a sparser grid past 128 px keeps huge softness from stalling the render
+        const int step = std::max(1, r / 128);
+        for (int y = static_cast<int>(std::floor(hy)) - r; y <= static_cast<int>(std::floor(hy)) + r; y += step)
         {
-            for (int x = static_cast<int>(std::floor(hx)) - r; x <= static_cast<int>(std::floor(hx)) + r; ++x)
+            for (int x = static_cast<int>(std::floor(hx)) - r; x <= static_cast<int>(std::floor(hx)) + r; x += step)
             {
                 const double f = std::max(0.0, 1.0 - (std::hypot(x + 0.5 - hx, y + 0.5 - hy) / radius));
                 sum += f * f * at(x, y);

@@ -477,7 +477,7 @@ namespace functional_fx_suite::hosts::ofx::plugin
         args.time = time * args.frame_duration;
     }
 
-    // the effect's other frames, each as a one-frame range next to the current one
+    // the effect's other frames and the current one, consecutive frames merged into one range
     static OfxStatus frames_needed(OfxImageEffectHandle effect, OfxPropertySetHandle in_args,
                                    OfxPropertySetHandle out_args)
     {
@@ -492,13 +492,21 @@ namespace functional_fx_suite::hosts::ofx::plugin
         set_time(timing, effect, time);
         std::vector<int> offsets =
             fx.frame_offsets(read_params(effect, time, g.f, 1.0, 1.0, g.par), timing.frame_number());
-        offsets.insert(offsets.begin(), 0);
+        offsets.push_back(0);
+        std::ranges::sort(offsets);
         const std::string prop = std::string("OfxImageClipPropFrameRange_") + SOURCE_CLIP;
         const property_set out(out_args);
-        for (std::size_t i = 0; i < offsets.size(); ++i)
+        int index = 0;
+        for (std::size_t i = 0; i < offsets.size();)
         {
-            out.set(prop.c_str(), time + offsets[i], static_cast<int>(2 * i));
-            out.set(prop.c_str(), time + offsets[i], static_cast<int>(2 * i + 1));
+            std::size_t j = i;
+            while (j + 1 < offsets.size() && offsets[j + 1] - offsets[j] <= 1)
+            {
+                ++j;
+            }
+            out.set(prop.c_str(), time + offsets[i], index++);
+            out.set(prop.c_str(), time + offsets[j], index++);
+            i = j + 1;
         }
         return kOfxStatOK;
     }

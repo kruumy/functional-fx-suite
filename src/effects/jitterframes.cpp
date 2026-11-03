@@ -47,7 +47,8 @@ namespace functional_fx_suite::effects::jitterframes
 
     static std::vector<int> frame_offsets(const core::param_values& v, int frame)
     {
-        return offset(v, frame) != 0 ? std::vector<int>{offset(v, frame)} : std::vector<int>{};
+        const int o = offset(v, frame);
+        return o != 0 ? std::vector<int>{o} : std::vector<int>{};
     }
 
     static void render(const core::render_args& args)

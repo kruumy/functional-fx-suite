@@ -433,15 +433,16 @@ namespace functional_fx_suite::effects::shake
                         std::copy(px.begin(), px.end(), d);
                         continue;
                     }
-                    // each channel follows its own path; alpha is the average of the three
+                    // each channel follows its own path; alpha is the largest of the three so no premultiplied
+                    // channel exceeds it
                     float alpha = 0.0f;
                     for (int c = 0; c < 3; ++c)
                     {
                         const auto px = warp(args, passes[c], nx, ny, mode);
                         d[c] = px[c];
-                        alpha += px[3];
+                        alpha = std::max(alpha, px[3]);
                     }
-                    d[3] = alpha / 3.0f;
+                    d[3] = alpha;
                 }
             }
         });

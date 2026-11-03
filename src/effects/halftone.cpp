@@ -40,7 +40,7 @@ namespace functional_fx_suite::effects::halftone
         param::scalar(2, "dots_frequency", "Dots Frequency").value(50).range(-UNBOUNDED, UNBOUNDED).slider(1, 200),
         param::scalar(3, "dots_angle", "Dots Angle").value(30).range(-UNBOUNDED, UNBOUNDED).slider(-180, 180),
         param::scalar(4, "dots_rel_width", "Dots Rel Width").value(1).range(0.01, UNBOUNDED).slider(0.1, 10),
-        param::scalar(5, "dots_sharpness", "Dots Sharpness").value(4).range(-UNBOUNDED, UNBOUNDED).slider(0, 10),
+        param::scalar(5, "dots_sharpness", "Dots Sharpness").value(4).range(-0.99, UNBOUNDED).slider(0, 10),
         param::scalar(6, "dots_lighten", "Dots Lighten").value(0).range(-UNBOUNDED, UNBOUNDED).slider(-1, 1),
         param::scalar(7, "smooth_source", "Smooth Source").value(0).range(0, UNBOUNDED).slider(0, 0.2),
         param::color(8, "color1", "Color1").value({1, 1, 1}),

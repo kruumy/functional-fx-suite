@@ -21,6 +21,8 @@ namespace functional_fx_suite::effects::timedisplace
     using core::param;
 
     static constexpr double UNBOUNDED = 1e6;
+    // every frame between the two shifts is requested from the host, so their distance is capped
+    static constexpr double MAX_SPAN = 1000;
 
     // the shifts are in frames
     static constexpr std::array<param, static_cast<std::size_t>(p::count)> PARAMS{
@@ -49,7 +51,8 @@ namespace functional_fx_suite::effects::timedisplace
 
         shift_range(const core::param_values& v, int frame)
             : black(std::clamp(v.scalar(p::black_time_shift), -UNBOUNDED, UNBOUNDED)),
-              white(std::clamp(v.scalar(p::white_time_shift), -UNBOUNDED, UNBOUNDED)), lo(std::min(black, white)),
+              white(std::clamp(v.scalar(p::white_time_shift), black - MAX_SPAN, black + MAX_SPAN)),
+              lo(std::min(black, white)),
               hi(std::max(black, white)), interp(v.toggle(p::interp_frames))
         {
             if (v.choice(p::shift_relative_to) == 0)
