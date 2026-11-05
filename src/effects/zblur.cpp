@@ -1,9 +1,7 @@
 #include "effects/zblur.hpp"
 #include "core/blur.hpp"
 #include "core/zdepth.hpp"
-#include <algorithm>
 #include <array>
-#include <cmath>
 
 namespace functional_fx_suite::effects::zblur
 {
@@ -66,14 +64,7 @@ namespace functional_fx_suite::effects::zblur
         const double width = 2.0 * v.scalar(p::blur_width);
         const double width_x = core::blur::amount_px(width * v.scalar(p::blur_rel_x), args.geometry);
         const double width_y = core::blur::amount_px(width * v.scalar(p::blur_rel_y), args.geometry);
-        const core::zdepth::layers layers{
-            .count = std::clamp(static_cast<int>(std::lround(v.scalar(p::layers))), 2, 50),
-            .focal_depth = v.scalar(p::focal_depth),
-            .depth_of_field = v.scalar(p::depth_of_field),
-            .rel_near = v.scalar(p::width_rel_near),
-            .rel_far = v.scalar(p::width_rel_far),
-            .comp = v.choice(p::layer_mode) == 0,
-        };
+        const core::zdepth::layers layers = core::zdepth::read_layers<p>(v);
         core::zdepth::composite(
             args, fogged.view(), z.view(), layers, [&](const core::image& layer, double out_of_focus) {
                 core::blur::gaussian(layer, width_x * out_of_focus, width_y * out_of_focus, core::blur::edge::reflect);

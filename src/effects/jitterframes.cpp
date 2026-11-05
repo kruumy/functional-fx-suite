@@ -1,7 +1,6 @@
 #include "effects/jitterframes.hpp"
 #include "core/noise.hpp"
 #include "core/retime.hpp"
-#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -37,25 +36,22 @@ namespace functional_fx_suite::effects::jitterframes
     // each block of Edit Frame Length frames jumps forward by its own random 0 .. Jitter Frame Dist frames
     static int offset(const core::param_values& v, int frame)
     {
-        const int length = static_cast<int>(std::lround(std::clamp(v.scalar(p::edit_frame_length), 1.0, UNBOUNDED)));
+        const int length = v.whole(p::edit_frame_length);
         const int cut = core::retime::block_start(frame, length, 0);
         const double r = core::noise::unit(
             core::noise::combine(core::noise::seed_bits(v.scalar(p::seed)), static_cast<std::uint32_t>(cut)));
-        return static_cast<int>(
-            std::floor(r * (std::clamp(v.scalar(p::jitter_frame_dist), -UNBOUNDED, UNBOUNDED) + 0.99)));
+        return static_cast<int>(std::floor(r * (v.scalar(p::jitter_frame_dist) + 0.99)));
     }
 
     static std::vector<int> frame_offsets(const core::param_values& v, int frame)
     {
-        const int o = offset(v, frame);
-        return o != 0 ? std::vector<int>{o} : std::vector<int>{};
+        return core::retime::offsets(offset(v, frame));
     }
 
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
-        core::retime::render(args, offset(v, args.frame_number()),
-                             v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
+        core::retime::render(args, offset(v, args.frame_number()), core::mask::luma_or_alpha(v.choice(p::mask_use)),
                              v.scalar(p::blur_mask), v.toggle(p::invert_mask));
     }
 

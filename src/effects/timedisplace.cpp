@@ -50,10 +50,9 @@ namespace functional_fx_suite::effects::timedisplace
         bool interp;
 
         shift_range(const core::param_values& v, int frame)
-            : black(std::clamp(v.scalar(p::black_time_shift), -UNBOUNDED, UNBOUNDED)),
+            : black(v.scalar(p::black_time_shift)),
               white(std::clamp(v.scalar(p::white_time_shift), black - MAX_SPAN, black + MAX_SPAN)),
-              lo(std::min(black, white)),
-              hi(std::max(black, white)), interp(v.toggle(p::interp_frames))
+              lo(std::min(black, white)), hi(std::max(black, white)), interp(v.toggle(p::interp_frames))
         {
             if (v.choice(p::shift_relative_to) == 0)
             {
@@ -109,9 +108,8 @@ namespace functional_fx_suite::effects::timedisplace
         // the matte (the source when none is connected), blurred; its 0..1 picks each pixel's frame
         core::render_args matte_args = args;
         matte_args.mask = args.background != nullptr ? args.background : &args.src;
-        const core::buffer matte = core::mask::build(
-            matte_args, v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-            v.scalar(p::blur_matte), false);
+        const core::buffer matte = core::mask::build(matte_args, core::mask::luma_or_alpha(v.choice(p::matte_use)),
+                                                     v.scalar(p::blur_matte), false);
         const core::image& m = matte.view();
 
         const core::image& dst = args.dst;
@@ -120,17 +118,11 @@ namespace functional_fx_suite::effects::timedisplace
             return static_cast<std::size_t>(y - dst.bounds.y0) * width + static_cast<std::size_t>(x - dst.bounds.x0);
         };
         std::vector<double> shifts(width * static_cast<std::size_t>(dst.bounds.height()));
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    const double k = m.bounds.contains(x, y) ? std::clamp(*m.at(x, y), 0.0f, 1.0f) : 0.0f;
-                    // clamped so rounding can't step outside the frames the host was asked for
-                    shifts[index(x, y)] = std::clamp(r.black + k * (r.white - r.black), r.lo, r.hi);
-                    std::fill_n(dst.at(x, y), 4, 0.0f);
-                }
-            }
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            const double k = m.bounds.contains(x, y) ? std::clamp(*m.at(x, y), 0.0f, 1.0f) : 0.0f;
+            // clamped so rounding can't step outside the frames the host was asked for
+            shifts[index(x, y)] = std::clamp(r.black + k * (r.white - r.black), r.lo, r.hi);
+            std::fill_n(dst.at(x, y), 4, 0.0f);
         });
 
         // only the frames some pixel reads are fetched, one at a time
@@ -156,21 +148,15 @@ namespace functional_fx_suite::effects::timedisplace
             {
                 continue; // a frame the host has none of is transparent
             }
-            core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-                for (int y = y_begin; y < y_end; ++y)
+            core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+                const auto w = static_cast<float>(r.weight(shifts[index(x, y)], n));
+                if (w > 0.0f && img.bounds.contains(x, y))
                 {
-                    for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
+                    const float* s = img.at(x, y);
+                    float* d = dst.at(x, y);
+                    for (int c = 0; c < 4; ++c)
                     {
-                        const auto w = static_cast<float>(r.weight(shifts[index(x, y)], n));
-                        if (w > 0.0f && img.bounds.contains(x, y))
-                        {
-                            const float* s = img.at(x, y);
-                            float* d = dst.at(x, y);
-                            for (int c = 0; c < 4; ++c)
-                            {
-                                d[c] += w * s[c];
-                            }
-                        }
+                        d[c] += w * s[c];
                     }
                 }
             });
@@ -184,7 +170,7 @@ namespace functional_fx_suite::effects::timedisplace
             .name = "f_timedisplace",
             .category = "Functional Time",
             .description = "Each pixel shows the clip at its own frame, picked by the brightness of a matte between "
-                           "Black Time Shift and White Time Shift.",
+                           "Black Time Shift and White Time Shift (at most 1000 frames apart).",
             .params = PARAMS,
             .mask_input = "",
             .background_input = "Matte",

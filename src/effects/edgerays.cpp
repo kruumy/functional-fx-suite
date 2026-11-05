@@ -113,24 +113,15 @@ namespace functional_fx_suite::effects::edgerays
         core::buffer level(b, 1);
         const core::image& l = level.view();
         const float from_alpha = v.scalar_f(p::rays_from_alpha);
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = b.x0; x < b.x1; ++x)
-                {
-                    const float* s = args.src.at(x, y);
-                    *l.at(x, y) = core::color::lerp(core::color::luma(s[0], s[1], s[2]), s[3], from_alpha);
-                }
-            }
+        core::parallel::for_pixels(b, [&](int x, int y) {
+            const float* s = args.src.at(x, y);
+            *l.at(x, y) = core::color::lerp(core::color::luma(s[0], s[1], s[2]), s[3], from_alpha);
         });
         const double thickness = v.scalar(p::edge_thickness);
         core::edges::prepare(l, thickness, v.scalar(p::edge_brightness) * (thickness + 0.1), args.geometry);
         const core::buffer edges = core::edges::magnitude(l);
 
-        const core::rays::shimmer shimmer{v.scalar(p::shimmer_amp), v.scalar(p::shimmer_freq),
-                                          core::noise::seed_bits(v.scalar(p::shimmer_seed)),
-                                          v.scalar(p::shimmer_shift_x) + args.time * v.scalar(p::shimmer_speed_x),
-                                          v.scalar(p::shimmer_shift_y) + args.time * v.scalar(p::shimmer_speed_y)};
+        const core::rays::shimmer shimmer = core::rays::read_shimmer<p>(v, args.time);
         core::buffer gen(b, 4);
         const core::image& g = gen.view();
         core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
@@ -208,31 +199,23 @@ namespace functional_fx_suite::effects::edgerays
     static void show_opaque(const core::render_args& args, const core::image& img, bool mono)
     {
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            const float* s = img.bounds.contains(x, y) ? img.at(x, y) : nullptr;
+            for (int c = 0; c < 3; ++c)
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    const float* s = img.bounds.contains(x, y) ? img.at(x, y) : nullptr;
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        d[c] = s == nullptr ? 0.0f : s[mono ? 3 : c];
-                    }
-                    d[3] = 1.0f;
-                }
+                d[c] = s == nullptr ? 0.0f : s[mono ? 3 : c];
             }
+            d[3] = 1.0f;
         });
     }
 
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
-        static constexpr std::array MATTE_SOURCES{core::mask::source::luma, core::mask::source::color,
-                                                  core::mask::source::alpha};
-        const core::buffer matte = core::mask::build(args, MATTE_SOURCES[std::clamp(v.choice(p::matte_type), 0, 2)],
+        const core::buffer matte = core::mask::build(args, core::mask::luma_color_alpha(v.choice(p::matte_type)),
                                                      v.scalar(p::blur_matte), v.toggle(p::invert_matte));
-        const core::buffer gen = generator(args, matte.view().data != nullptr ? &matte.view() : nullptr);
+        const core::buffer gen = generator(args, matte.view_if_set());
         const int show = v.choice(p::show);
         if (show == 1)
         {
@@ -241,15 +224,7 @@ namespace functional_fx_suite::effects::edgerays
         }
 
         const bool dark = v.toggle(p::enable_dark_rays);
-        core::rays::path path;
-        path.cx = v.vec(p::center)[0];
-        path.cy = v.vec(p::center)[1];
-        path.lengths = core::rays::channel_lengths(
-            v.scalar(p::rays_length), {v.scalar(p::length_red), v.scalar(p::length_green), v.scalar(p::length_blue)},
-            dark);
-        path.shape = core::rays::ray_shape{v.scalar(p::reverse_rays), v.scalar(p::bias_outer_bright),
-                                           v.scalar(p::rays_brightness)};
-        path.res_level = std::clamp(v.choice(p::rays_res), 0, 2);
+        const core::rays::path path = core::rays::read_path<p>(v, dark, v.scalar(p::rays_brightness));
         const core::buffer grid = core::rays::streak(args, path, gen.view());
         const core::buffer rays = upsample(args, grid.view(), path.res_level);
 
@@ -258,23 +233,17 @@ namespace functional_fx_suite::effects::edgerays
         core::buffer dark_rays(light.bounds, 4);
         const auto& color = v.vec(p::rays_color);
         const auto affect_alpha = v.scalar_f(p::affect_alpha);
-        core::parallel::for_range(light.bounds.y0, light.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(light.bounds, [&](int x, int y) {
+            float* l = light.at(x, y);
+            float* d = dark_rays.view().at(x, y);
+            float brightest = 0.0f;
+            for (int c = 0; c < 3; ++c)
             {
-                for (int x = light.bounds.x0; x < light.bounds.x1; ++x)
-                {
-                    float* l = light.at(x, y);
-                    float* d = dark_rays.view().at(x, y);
-                    float brightest = 0.0f;
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        d[c] = static_cast<float>(1.0 - color[c]) * l[c];
-                        l[c] *= static_cast<float>(color[c]);
-                        brightest = std::max(brightest, l[c]);
-                    }
-                    l[3] = std::clamp(brightest, 0.0f, 1.0f) * affect_alpha;
-                }
+                d[c] = static_cast<float>(1.0 - color[c]) * l[c];
+                l[c] *= static_cast<float>(color[c]);
+                brightest = std::max(brightest, l[c]);
             }
+            l[3] = std::clamp(brightest, 0.0f, 1.0f) * affect_alpha;
         });
         if (show == 2)
         {

@@ -2,6 +2,8 @@
 #include "core/parallel.hpp"
 #include "core/sample.hpp"
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace functional_fx_suite::core::blur
 {
@@ -17,7 +19,10 @@ namespace functional_fx_suite::core::blur
     static radii box_radii(double amount)
     {
         constexpr double GAUSS_SCALE = 4.0 / 3.0;
-        return split(static_cast<int>(amount * GAUSS_SCALE + 0.5));
+        // capped at INT_MAX before rounding, so a huge blur maxes out instead of overflowing
+        const double total =
+            std::clamp(amount * GAUSS_SCALE, 0.0, static_cast<double>(std::numeric_limits<int>::max()));
+        return split(static_cast<int>(std::lround(total)));
     }
 
     int reach(double amount)

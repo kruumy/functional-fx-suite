@@ -1,7 +1,6 @@
 #include "effects/distort.hpp"
 #include "core/mask.hpp"
 #include "core/warp.hpp"
-#include <algorithm>
 #include <array>
 
 namespace functional_fx_suite::effects::distort
@@ -45,9 +44,8 @@ namespace functional_fx_suite::effects::distort
         const core::param_values& v = *args.params;
         const double blur_lens = v.scalar(p::blur_lens);
         const core::buffer lens = core::warp::lens(args, blur_lens, v.scalar(p::amount) * (blur_lens + 0.1));
-        const core::buffer matte =
-            core::mask::build(args, v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_matte), v.toggle(p::invert_matte));
+        const core::buffer matte = core::mask::build(args, core::mask::luma_or_alpha(v.choice(p::matte_use)),
+                                                     v.scalar(p::blur_matte), v.toggle(p::invert_matte));
         const double fine = v.toggle(p::fine) ? 0.01 : 1.0;
         const core::warp::vec2 rel{v.scalar(p::amount_rel_x), v.scalar(p::amount_rel_y)};
         const double turns = v.scalar(p::rotate_warp_dir) / 360.0;
@@ -58,8 +56,7 @@ namespace functional_fx_suite::effects::distort
             const double k = fine * core::warp::matte(matte.view(), x, y);
             return core::warp::vec2{xy[0] + k * d[0], xy[1] + k * d[1]};
         });
-        const core::warp::source src(args.src, static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2)),
-                                     v.toggle(p::filter));
+        const core::warp::source src(args.src, static_cast<core::sample::wrap>(v.choice(p::wrap)), v.toggle(p::filter));
         core::warp::apply(args, field.view(), src);
     }
 

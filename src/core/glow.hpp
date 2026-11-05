@@ -4,12 +4,25 @@
 #include "core/buffer.hpp"
 #include "core/render_args.hpp"
 #include "core/sample.hpp"
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
 namespace functional_fx_suite::core::glow
 {
     using rgb = std::array<double, 3>;
+
+    // per-channel thresholds: Threshold plus Threshold Add Color
+    [[nodiscard]] inline rgb thresholds(double threshold, const std::array<double, 3>& add)
+    {
+        return {threshold + add[0], threshold + add[1], threshold + add[2]};
+    }
+
+    // the range left above the lowest threshold, at least `min`
+    [[nodiscard]] inline double headroom(const rgb& th, double min)
+    {
+        return std::max(min, 1.0 - std::ranges::min(th));
+    }
 
     // the source a glow starts from, over the source bounds: mixed toward its alpha by `from_alpha`, rgb times the
     // matte (1 or 3 channels) when there is one

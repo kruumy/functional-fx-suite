@@ -2,7 +2,9 @@
 
 #include "core/buffer.hpp"
 #include "core/render_args.hpp"
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <functional>
 
 namespace functional_fx_suite::core::zdepth
@@ -26,6 +28,26 @@ namespace functional_fx_suite::core::zdepth
         double rel_far = 1;
         bool comp = false; // Comp: each depth slice on its own, over the farther ones; Interp: mix the layers per pixel
     };
+
+    // the layer settings from an effect's Layers, Layer Mode, focus and Width Rel params
+    template <param_index E> [[nodiscard]] layers read_layers(const param_values& v)
+    {
+        return {
+            .count = v.whole(E::layers),
+            .focal_depth = v.scalar(E::focal_depth),
+            .depth_of_field = v.scalar(E::depth_of_field),
+            .rel_near = v.scalar(E::width_rel_near),
+            .rel_far = v.scalar(E::width_rel_far),
+            .comp = v.choice(E::layer_mode) == 0,
+        };
+    }
+
+    // how far depth d lies outside the focus zone, scaled by rel_near or rel_far
+    [[nodiscard]] inline double focus_distance(const layers& s, double d)
+    {
+        return std::max(0.0, std::abs(d - s.focal_depth) - (s.depth_of_field / 2.0)) *
+               (d < s.focal_depth ? s.rel_near : s.rel_far);
+    }
 
     // splits src into depth layers evenly spaced over 0..1, defocuses each in place by its distance outside the focus
     // zone and composites them far to near into args.dst

@@ -7,26 +7,12 @@
 
 namespace functional_fx_suite::core::glow
 {
-    // runs fn(x, y) over every pixel of `area`, rows in parallel
-    template <class Fn> static void each_pixel(const rect& area, Fn&& fn)
-    {
-        parallel::for_range(area.y0, area.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = area.x0; x < area.x1; ++x)
-                {
-                    fn(x, y);
-                }
-            }
-        });
-    }
-
     buffer source(const render_args& args, const image* matte, double from_alpha)
     {
         buffer out(args.src.bounds, 4);
         const image& o = out.view();
         const auto t = static_cast<float>(from_alpha);
-        each_pixel(o.bounds, [&](int x, int y) {
+        parallel::for_pixels(o.bounds, [&](int x, int y) {
             const float* s = args.src.at(x, y);
             float* d = o.at(x, y);
             for (int c = 0; c < 4; ++c)
@@ -47,7 +33,7 @@ namespace functional_fx_suite::core::glow
 
     void hotspots(const image& img, const rgb& th)
     {
-        each_pixel(img.bounds, [&](int x, int y) {
+        parallel::for_pixels(img.bounds, [&](int x, int y) {
             float* v = img.at(x, y);
             float excess = 0.0f;
             float total = 0.0f;
@@ -69,7 +55,7 @@ namespace functional_fx_suite::core::glow
         }
         constexpr double MIN_HEADROOM = 1.0 / 128.0;
         const auto k = static_cast<float>(1.0 / std::max(MIN_HEADROOM, 1.0 - std::ranges::min(th)));
-        each_pixel(img.bounds, [&](int x, int y) {
+        parallel::for_pixels(img.bounds, [&](int x, int y) {
             float* v = img.at(x, y);
             float excess = 0.0f;
             float total = 0.0f;
@@ -98,10 +84,10 @@ namespace functional_fx_suite::core::glow
         const image& p = plane.view();
         for (int c = 0; c < 3; ++c)
         {
-            each_pixel(img.bounds, [&](int x, int y) { *p.at(x, y) = img.at(x, y)[c]; });
+            parallel::for_pixels(img.bounds, [&](int x, int y) { *p.at(x, y) = img.at(x, y)[c]; });
             blur::gaussian(p, amount_x[c], amount_y[c], mode);
             const auto g = static_cast<float>(gain[c]);
-            each_pixel(img.bounds, [&](int x, int y) { img.at(x, y)[c] = *p.at(x, y) * g; });
+            parallel::for_pixels(img.bounds, [&](int x, int y) { img.at(x, y)[c] = *p.at(x, y) * g; });
         }
     }
 
@@ -122,7 +108,7 @@ namespace functional_fx_suite::core::glow
         {
             return;
         }
-        each_pixel(img.bounds, [&](int x, int y) {
+        parallel::for_pixels(img.bounds, [&](int x, int y) {
             const float k = a.at(f.to_nx(x + 0.5), f.to_ny(y + 0.5));
             float* v = img.at(x, y);
             std::for_each(v, v + 3, [k](float& c) { c *= k; });
@@ -205,7 +191,7 @@ namespace functional_fx_suite::core::glow
         const auto scale_background = static_cast<float>(c.scale_background);
         const float under = color::screen_super(static_cast<float>(c.glow_under_source), light);
         const image* bg = args.background;
-        each_pixel(args.dst.bounds, [&](int x, int y) {
+        parallel::for_pixels(args.dst.bounds, [&](int x, int y) {
             float* d = args.dst.at(x, y);
             if (c.show)
             {

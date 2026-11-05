@@ -69,17 +69,17 @@ namespace functional_fx_suite::effects::glowrings
     {
         const core::param_values& v = *args.params;
         const core::buffer matte = core::mask::build(args, core::mask::source::color, 0.0, v.toggle(p::invert_matte));
-        const core::image* matte_view = matte.view().data != nullptr ? &matte.view() : nullptr;
+        const core::image* matte_view = matte.view_if_set();
         const core::buffer pic = core::glow::source(args, matte_view, v.scalar(p::glow_from_alpha));
         const auto& add = v.vec(p::threshold_add_color);
         const double t = v.scalar(p::threshold);
-        const core::glow::rgb th{t + add[0], t + add[1], t + add[2]};
+        const core::glow::rgb th = core::glow::thresholds(t, add);
         core::glow::hotspots(pic.view(), th);
 
         // a ring is a wide glow minus a narrower one; Thickness sets how much narrower
         constexpr double MIN_HEADROOM = 0.01;
         constexpr double RING_GAIN = 5.0;
-        const double headroom = std::max(MIN_HEADROOM, 1.0 - std::ranges::min(th));
+        const double headroom = core::glow::headroom(th, MIN_HEADROOM);
         const std::array channel{v.scalar(p::width_red), v.scalar(p::width_green), v.scalar(p::width_blue)};
         const std::array thickness{v.scalar(p::thickness_red), v.scalar(p::thickness_green),
                                    v.scalar(p::thickness_blue)};
@@ -93,7 +93,7 @@ namespace functional_fx_suite::effects::glowrings
         {
             const double w = v.scalar(p::glow_width) * channel[c];
             const double outer = core::blur::amount_px(w, args.geometry);
-            const double inner = core::blur::amount_px(std::max(0.0, w * (1.0 - thickness[c])), args.geometry);
+            const double inner = core::blur::amount_px(w * (1.0 - thickness[c]), args.geometry);
             outer_x[c] = outer * v.scalar(p::width_x);
             outer_y[c] = outer * v.scalar(p::width_y);
             inner_x[c] = inner * v.scalar(p::width_x);
@@ -101,30 +101,22 @@ namespace functional_fx_suite::effects::glowrings
             gain[c] = v.scalar(p::brightness) * RING_GAIN * color[c] / headroom;
         }
         const core::rect& b = pic.view().bounds;
-        core::buffer ring(b, 4);
-        core::buffer inner(b, 4);
-        std::copy_n(pic.view().data, static_cast<std::size_t>(b.width()) * b.height() * 4, ring.view().data);
-        std::copy_n(pic.view().data, static_cast<std::size_t>(b.width()) * b.height() * 4, inner.view().data);
+        const core::buffer ring = core::buffer::copy_of(pic.view());
+        const core::buffer inner = core::buffer::copy_of(pic.view());
         core::glow::blur_channels(ring.view(), outer_x, outer_y, gain, core::blur::edge::transparent);
         core::glow::blur_channels(inner.view(), inner_x, inner_y, gain, core::blur::edge::transparent);
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(b, [&](int x, int y) {
+            float* r = ring.view().at(x, y);
+            const float* i = inner.view().at(x, y);
+            for (int c = 0; c < 3; ++c)
             {
-                for (int x = b.x0; x < b.x1; ++x)
-                {
-                    float* r = ring.view().at(x, y);
-                    const float* i = inner.view().at(x, y);
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        r[c] = std::max(0.0f, r[c] - i[c]);
-                    }
-                }
+                r[c] = std::max(0.0f, r[c] - i[c]);
             }
         });
 
         const core::glow::composite_settings settings{
             .affect_alpha = v.scalar(p::affect_alpha),
-            .mode = static_cast<core::glow::combine>(std::clamp(v.choice(p::combine), 0, 4)),
+            .mode = static_cast<core::glow::combine>(v.choice(p::combine)),
             .glow_under_source = v.scalar(p::glow_under_source),
             .light_bg = v.scalar(p::light_background),
             .scale_background = v.scalar(p::bg_brightness),

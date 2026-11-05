@@ -130,28 +130,6 @@ namespace functional_fx_suite::effects::ultraglow
 
     using core::glow::rgb;
 
-    // runs fn(x, y) over every pixel of `area`, rows in parallel
-    template <class Fn> static void each_pixel(const core::rect& area, Fn&& fn)
-    {
-        core::parallel::for_range(area.y0, area.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = area.x0; x < area.x1; ++x)
-                {
-                    fn(x, y);
-                }
-            }
-        });
-    }
-
-    static core::buffer copy(const core::image& img)
-    {
-        core::buffer out(img.bounds, img.channels);
-        std::copy_n(img.data, static_cast<std::size_t>(img.bounds.width()) * img.bounds.height() * img.channels,
-                    out.view().data);
-        return out;
-    }
-
     static float matte_luma(const core::image* matte, int x, int y)
     {
         if (matte == nullptr || !matte->bounds.contains(x, y))
@@ -167,7 +145,7 @@ namespace functional_fx_suite::effects::ultraglow
     static void edges(const core::render_args& args, const core::image& s, const core::image* matte)
     {
         const core::param_values& v = *args.params;
-        const core::buffer blurred = copy(s);
+        const core::buffer blurred = core::buffer::copy_of(s);
         const core::image& e = blurred.view();
         const double smooth = core::blur::amount_px(v.scalar(p::edge_smooth), args.geometry);
         core::blur::gaussian(e, smooth, smooth);
@@ -178,7 +156,7 @@ namespace functional_fx_suite::effects::ultraglow
         const bool fill = v.toggle(p::edge_fill);
         const int mode = v.choice(p::edge_combine);
         const core::rect& b = e.bounds;
-        each_pixel(b, [&](int x, int y) {
+        core::parallel::for_pixels(b, [&](int x, int y) {
             const auto at = [&](int px, int py, int c) {
                 return e.at(std::clamp(px, b.x0, b.x1 - 1), std::clamp(py, b.y0, b.y1 - 1))[c];
             };
@@ -232,8 +210,8 @@ namespace functional_fx_suite::effects::ultraglow
         const core::param_values& v = *args.params;
         const auto lights = v.scalar_f(p::atmosphere_lights);
         const auto darks = v.scalar_f(p::atmosphere_darks);
-        const auto mode = static_cast<core::glow::combine>(std::clamp(v.choice(p::combine), 0, 4));
-        each_pixel(s.bounds, [&](int x, int y) {
+        const auto mode = static_cast<core::glow::combine>(v.choice(p::combine));
+        core::parallel::for_pixels(s.bounds, [&](int x, int y) {
             const float tex = atm.at(args.geometry.to_nx(x + 0.5), args.geometry.to_ny(y + 0.5));
             if (tex <= 0.0f)
             {
@@ -271,9 +249,10 @@ namespace functional_fx_suite::effects::ultraglow
         const core::image& pl = plane.view();
         for (int c = 0; c < 3; ++c)
         {
-            each_pixel(g.bounds, [&](int x, int y) { *pl.at(x, y) = g.at(x, y)[c]; });
+            core::parallel::for_pixels(g.bounds, [&](int x, int y) { *pl.at(x, y) = g.at(x, y)[c]; });
             core::blur::gaussian(pl, px, px, core::blur::edge::reflect);
-            each_pixel(g.bounds, [&](int x, int y) { g.at(x, y)[c] = (*pl.at(x, y) - pivot) * k + pivot; });
+            core::parallel::for_pixels(g.bounds,
+                                       [&](int x, int y) { g.at(x, y)[c] = (*pl.at(x, y) - pivot) * k + pivot; });
         }
     }
 
@@ -291,11 +270,11 @@ namespace functional_fx_suite::effects::ultraglow
     static core::buffer thresholded(const core::render_args& args, const core::image& from, const core::image* matte)
     {
         const core::param_values& v = *args.params;
-        core::buffer out = copy(from);
+        core::buffer out = core::buffer::copy_of(from);
         const core::image& g = out.view();
         if (matte != nullptr)
         {
-            each_pixel(g.bounds, [&](int x, int y) {
+            core::parallel::for_pixels(g.bounds, [&](int x, int y) {
                 float* d = g.at(x, y);
                 const float* m = matte->bounds.contains(x, y) ? matte->at(x, y) : nullptr;
                 for (int c = 0; c < 3; ++c)
@@ -333,7 +312,7 @@ namespace functional_fx_suite::effects::ultraglow
     static void texture(const core::render_args& args, const core::image& g, const core::glow::atmosphere& atm,
                         float lights, float darks)
     {
-        each_pixel(g.bounds, [&](int x, int y) {
+        core::parallel::for_pixels(g.bounds, [&](int x, int y) {
             const float tex = atm.at(args.geometry.to_nx(x + 0.5), args.geometry.to_ny(y + 0.5));
             const float k = (lights - darks) * (tex + darks);
             float* d = g.at(x, y);
@@ -345,7 +324,7 @@ namespace functional_fx_suite::effects::ultraglow
     {
         const core::param_values& v = *args.params;
         const core::buffer matte = core::mask::build(args, core::mask::source::color, 0.0, v.toggle(p::invert_matte));
-        const core::image* matte_view = matte.view().data != nullptr ? &matte.view() : nullptr;
+        const core::image* matte_view = matte.view_if_set();
         const core::buffer source = core::glow::source(args, nullptr, v.scalar(p::glow_from_alpha));
         const core::image& s = source.view();
         if (v.toggle(p::edge_detect))
@@ -413,7 +392,7 @@ namespace functional_fx_suite::effects::ultraglow
             {
                 // screened onto the glow so far
                 const core::image& g = glow.view();
-                each_pixel(g.bounds, [&](int x, int y) {
+                core::parallel::for_pixels(g.bounds, [&](int x, int y) {
                     float* d = g.at(x, y);
                     const float* n = stage.view().at(x, y);
                     for (int c = 0; c < 3; ++c)
@@ -430,7 +409,7 @@ namespace functional_fx_suite::effects::ultraglow
 
         const core::glow::composite_settings settings{
             .affect_alpha = v.scalar(p::affect_alpha),
-            .mode = static_cast<core::glow::combine>(std::clamp(v.choice(p::combine), 0, 4)),
+            .mode = static_cast<core::glow::combine>(v.choice(p::combine)),
             .glow_under_source = v.scalar(p::glow_under_source),
             .light_bg = v.scalar(p::light_background),
             .scale_background = v.scalar(p::bg_brightness),

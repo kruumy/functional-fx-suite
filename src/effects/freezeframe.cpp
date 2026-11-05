@@ -1,6 +1,5 @@
 #include "effects/freezeframe.hpp"
 #include "core/retime.hpp"
-#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -28,27 +27,21 @@ namespace functional_fx_suite::effects::freezeframe
         param::toggle(5, "invert_mask", "Invert Mask"),
     };
 
-    static int whole(const core::param_values& v, p id, double min)
-    {
-        return static_cast<int>(std::lround(std::clamp(v.scalar(id), min, UNBOUNDED)));
-    }
-
     // each block of Freeze Frames frames from Frame Start holds its first frame
     static int offset(const core::param_values& v, int frame)
     {
-        return core::retime::block_start(frame, whole(v, p::freeze_frames, 1), whole(v, p::frame_start, 0)) - frame;
+        return core::retime::block_start(frame, v.whole(p::freeze_frames), v.whole(p::frame_start)) - frame;
     }
 
     static std::vector<int> frame_offsets(const core::param_values& v, int frame)
     {
-        return offset(v, frame) != 0 ? std::vector<int>{offset(v, frame)} : std::vector<int>{};
+        return core::retime::offsets(offset(v, frame));
     }
 
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
-        core::retime::render(args, offset(v, args.frame_number()),
-                             v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
+        core::retime::render(args, offset(v, args.frame_number()), core::mask::luma_or_alpha(v.choice(p::mask_use)),
                              v.scalar(p::blur_mask), v.toggle(p::invert_mask));
     }
 

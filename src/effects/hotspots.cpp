@@ -47,41 +47,29 @@ namespace functional_fx_suite::effects::hotspots
 
         const auto& add = v.vec(p::threshold_add_color);
         const double t = v.scalar(p::threshold);
-        const core::glow::rgb th{t + add[0], t + add[1], t + add[2]};
+        const core::glow::rgb th = core::glow::thresholds(t, add);
         core::glow::hotspots(pic.view(), th);
         constexpr double MIN_HEADROOM = 0.01;
-        const auto gain =
-            static_cast<float>(v.scalar(p::brightness) / std::max(MIN_HEADROOM, 1.0 - std::ranges::min(th)));
+        const auto gain = static_cast<float>(v.scalar(p::brightness) / core::glow::headroom(th, MIN_HEADROOM));
         const float saturation = v.scalar_f(p::saturation);
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!args.src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const float* h = pic.view().at(x, y);
-                    const float a = args.src.at(x, y)[3];
-                    const core::color::rgb out =
-                        core::color::sat_scale({h[0] * gain, h[1] * gain, h[2] * gain}, saturation);
-                    std::ranges::transform(out, d, [a](float c) { return c * a; });
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const float* h = pic.view().at(x, y);
+            const float a = args.src.at(x, y)[3];
+            const core::color::rgb out = core::color::sat_scale({h[0] * gain, h[1] * gain, h[2] * gain}, saturation);
+            std::ranges::transform(out, d, [a](float c) { return c * a; });
+            d[3] = a;
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

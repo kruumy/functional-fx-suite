@@ -613,7 +613,7 @@ namespace functional_fx_suite::effects::filmdamage
         namespace n = core::noise;
         std::vector<hair> out;
         const double count = std::max(0.0, v.scalar(p::hairs));
-        const double freq = 1.0 / std::max(0.1, v.scalar(p::hair_persistence));
+        const double freq = 1.0 / v.scalar(p::hair_persistence);
         const double threshold = 1.0 - std::sqrt(count / 10.0);
         const double size = v.scalar(p::hair_size);
         const double vary = v.scalar(p::vary_hair_size);
@@ -697,7 +697,7 @@ namespace functional_fx_suite::effects::filmdamage
         const core::frame& f = args.geometry;
         const core::image& src = args.src;
         const double t = args.time;
-        const auto frame = std::llround(t / args.frame_duration);
+        const auto frame = args.frame_number();
         const double seed = v.scalar(p::seed);
         const double aspect = src.bounds.height() / f.width;
         const bool flip = v.toggle(p::flip_stamps_vertically);
@@ -884,9 +884,7 @@ namespace functional_fx_suite::effects::filmdamage
         {
             if (proj == &fl)
             {
-                shaken.reset(src.bounds, 3);
-                std::copy_n(fl.data, static_cast<std::size_t>(fl.bounds.width()) * fl.bounds.height() * 3,
-                            shaken.view().data);
+                shaken = core::buffer::copy_of(fl);
                 proj = &shaken.view();
             }
             core::blur::gaussian(*proj, core::blur::amount_px(blur_x, f), core::blur::amount_px(blur_y, f));
@@ -945,12 +943,8 @@ namespace functional_fx_suite::effects::filmdamage
             }
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

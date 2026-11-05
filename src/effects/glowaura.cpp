@@ -93,32 +93,26 @@ namespace functional_fx_suite::effects::glowaura
     {
         const core::param_values& v = *args.params;
         const core::buffer matte = core::mask::build(args, core::mask::source::color, 0.0, v.toggle(p::invert_matte));
-        const core::image* matte_view = matte.view().data != nullptr ? &matte.view() : nullptr;
+        const core::image* matte_view = matte.view_if_set();
         const core::buffer s = core::glow::source(args, matte_view, v.scalar(p::glow_from_alpha));
         const core::rect& b = s.view().bounds;
         const auto& add = v.vec(p::threshold_add_color);
         const double t = v.scalar(p::threshold);
-        const core::glow::rgb th{t + add[0], t + add[1], t + add[2]};
+        const core::glow::rgb th = core::glow::thresholds(t, add);
         constexpr double MIN_HEADROOM = 0.01;
         constexpr double PIC_GAIN = 4.0;
-        const auto scale_pic = static_cast<float>(PIC_GAIN / std::max(MIN_HEADROOM, 1.0 - std::ranges::min(th)));
+        const auto scale_pic = static_cast<float>(PIC_GAIN / core::glow::headroom(th, MIN_HEADROOM));
 
         // mono excess over the threshold: shown by Show Threshold, blurred into the aura's shape
         core::buffer shown(b, 4);
         core::buffer pic(b, 1);
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = b.x0; x < b.x1; ++x)
-                {
-                    const float* c = s.view().at(x, y);
-                    const float bw = std::max(0.0f, core::color::luma(c[0] - static_cast<float>(th[0]),
-                                                                      c[1] - static_cast<float>(th[1]),
-                                                                      c[2] - static_cast<float>(th[2])));
-                    *pic.view().at(x, y) = bw;
-                    std::fill_n(shown.view().at(x, y), 3, bw * scale_pic);
-                }
-            }
+        core::parallel::for_pixels(b, [&](int x, int y) {
+            const float* c = s.view().at(x, y);
+            const float bw =
+                std::max(0.0f, core::color::luma(c[0] - static_cast<float>(th[0]), c[1] - static_cast<float>(th[1]),
+                                                 c[2] - static_cast<float>(th[2])));
+            *pic.view().at(x, y) = bw;
+            std::fill_n(shown.view().at(x, y), 3, bw * scale_pic);
         });
         const double width = v.scalar(p::glow_width);
         const double px = core::blur::amount_px(width, args.geometry);
@@ -136,34 +130,28 @@ namespace functional_fx_suite::effects::glowaura
         const auto& color = v.vec(p::color);
         const double brightness = v.scalar(p::brightness);
         core::buffer aura(b, 4);
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(b, [&](int x, int y) {
+            const double level = *pic.view().at(x, y) * scale_pic;
+            // bands follow the gradient direction, twisted by the glow's own level
+            const double angle = direction(pic.view(), x, y) + level * twist;
+            core::color::rgb band{};
+            for (int c = 0; c < 3; ++c)
             {
-                for (int x = b.x0; x < b.x1; ++x)
-                {
-                    const double level = *pic.view().at(x, y) * scale_pic;
-                    // bands follow the gradient direction, twisted by the glow's own level
-                    const double angle = direction(pic.view(), x, y) + level * twist;
-                    core::color::rgb band{};
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        const double turns = angle * freqs[c] - phases[c];
-                        band[c] = static_cast<float>(0.5 + 0.5 * std::sin(2.0 * std::numbers::pi * turns));
-                    }
-                    band = core::color::sat_scale(band, saturation);
-                    const double fade = std::min(1.0, level * outer);
-                    float* d = aura.view().at(x, y);
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        d[c] = static_cast<float>(band[c] * fade * brightness * color[c]);
-                    }
-                }
+                const double turns = angle * freqs[c] - phases[c];
+                band[c] = static_cast<float>(0.5 + 0.5 * std::sin(2.0 * std::numbers::pi * turns));
+            }
+            band = core::color::sat_scale(band, saturation);
+            const double fade = std::min(1.0, level * outer);
+            float* d = aura.view().at(x, y);
+            for (int c = 0; c < 3; ++c)
+            {
+                d[c] = static_cast<float>(band[c] * fade * brightness * color[c]);
             }
         });
 
         const core::glow::composite_settings settings{
             .affect_alpha = v.scalar(p::affect_alpha),
-            .mode = static_cast<core::glow::combine>(std::clamp(v.choice(p::combine), 0, 4)),
+            .mode = static_cast<core::glow::combine>(v.choice(p::combine)),
             .glow_under_source = v.scalar(p::glow_under_source),
             .light_bg = v.scalar(p::light_background),
             .scale_background = v.scalar(p::bg_brightness),

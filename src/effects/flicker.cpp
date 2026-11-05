@@ -83,25 +83,19 @@ namespace functional_fx_suite::effects::flicker
         }
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!args.src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const float* s = args.src.at(x, y);
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        d[c] = s[c] * gain[c];
-                    }
-                    d[3] = s[3];
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const float* s = args.src.at(x, y);
+            for (int c = 0; c < 3; ++c)
+            {
+                d[c] = s[c] * gain[c];
+            }
+            d[3] = s[3];
         });
     }
 

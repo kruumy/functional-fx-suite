@@ -217,11 +217,11 @@ namespace functional_fx_suite::effects::digitaldamage
         const double intensity = v.scalar(p::intensity);
         const double master = v.scalar(p::time_intensity);
         const double high_intensity = std::max(intensity - 1.0, 0.0) * 0.5;
-        const double size = std::max(0.001, v.scalar(p::damage_size));
-        const double dfx = 1.0 / size / std::max(0.001, v.scalar(p::damage_size_rel_x));
+        const double size = v.scalar(p::damage_size);
+        const double dfx = 1.0 / size / v.scalar(p::damage_size_rel_x);
         const double dfy = 1.0 / size;
         const double time_seed = seed + t;
-        const auto frame_number = static_cast<double>(std::lround(t / args.frame_duration));
+        const auto frame_number = static_cast<double>(args.frame_number());
 
         const bool shift_on = v.toggle(p::shift) &&
                               blink(v.scalar(p::shift_blink_freq), v.scalar(p::shift_always), master, seed + 2.0, t);
@@ -307,7 +307,7 @@ namespace functional_fx_suite::effects::digitaldamage
             }
         });
 
-        const double pix_freq = std::max(1.0, v.scalar(p::pixelate_frequency));
+        const double pix_freq = v.scalar(p::pixelate_frequency);
         const double cell_x = 2.0 / pix_freq / dfx;
         const double cell_y = 2.0 / pix_freq / dfy;
         const std::uint32_t bands_seed =
@@ -420,12 +420,8 @@ namespace functional_fx_suite::effects::digitaldamage
             }
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

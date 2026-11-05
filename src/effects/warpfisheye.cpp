@@ -51,9 +51,8 @@ namespace functional_fx_suite::effects::warpfisheye
         const double zoom = v.scalar(p::z_dist) / (1.0 + std::max(0.0, amount));
         const double turns = v.scalar(p::rotate) / -360.0;
         const core::warp::vec2 origin{center[0] - v.scalar(p::shift_orig_x), center[1] - v.scalar(p::shift_orig_y)};
-        const core::buffer matte =
-            core::mask::build(args, v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_matte), v.toggle(p::invert_matte));
+        const core::buffer matte = core::mask::build(args, core::mask::luma_or_alpha(v.choice(p::matte_use)),
+                                                     v.scalar(p::blur_matte), v.toggle(p::invert_matte));
 
         const core::buffer field = core::warp::field(args, [&](int x, int y, const core::warp::vec2& xy) {
             const core::warp::vec2 d{xy[0] - center[0], xy[1] - center[1]};
@@ -62,8 +61,7 @@ namespace functional_fx_suite::effects::warpfisheye
             const double m = core::warp::matte(matte.view(), x, y);
             return core::warp::vec2{xy[0] + (r[0] + origin[0] - xy[0]) * m, xy[1] + (r[1] + origin[1] - xy[1]) * m};
         });
-        const core::warp::source src(args.src, static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2)),
-                                     v.toggle(p::filter));
+        const core::warp::source src(args.src, static_cast<core::sample::wrap>(v.choice(p::wrap)), v.toggle(p::filter));
         core::warp::apply(args, field.view(), src);
     }
 

@@ -20,13 +20,12 @@ namespace functional_fx_suite::core
         frame geometry;
         double time = 0.0;                  // seconds
         double frame_duration = 1.0 / 24.0; // seconds
-        // param values at another time (seconds); empty when the host gives only the current ones
+        // param values at another time in seconds; empty when the host only has the current ones
         std::function<param_values(double)> params_at;
-        // the source `offset` frames from now, read from the host on each call so an effect can hold one frame at a
-        // time; no data for an offset the effect's frame_offsets didn't list or a frame the host has none of
+        // the source `offset` frames away, empty if unlisted or missing; fetch each once, as AE frees it after reading
         std::function<buffer(int)> frame_at;
 
-        // the current frame number, the one the effect's frame_offsets is given
+        // the current frame number, as passed to the effect's frame_offsets
         [[nodiscard]] int frame_number() const
         {
             return static_cast<int>(std::lround(time / frame_duration));

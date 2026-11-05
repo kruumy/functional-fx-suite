@@ -1,7 +1,6 @@
 #include "effects/distortrgb.hpp"
 #include "core/mask.hpp"
 #include "core/warp.hpp"
-#include <algorithm>
 #include <array>
 
 namespace functional_fx_suite::effects::distortrgb
@@ -50,13 +49,11 @@ namespace functional_fx_suite::effects::distortrgb
         const core::param_values& v = *args.params;
         const double blur_lens = v.scalar(p::blur_lens);
         const core::buffer lens = core::warp::lens(args, blur_lens, v.scalar(p::amount) * (blur_lens + 0.1));
-        const core::buffer matte =
-            core::mask::build(args, v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_matte), v.toggle(p::invert_matte));
+        const core::buffer matte = core::mask::build(args, core::mask::luma_or_alpha(v.choice(p::matte_use)),
+                                                     v.scalar(p::blur_matte), v.toggle(p::invert_matte));
         const core::warp::vec2 rel{v.scalar(p::amount_rel_x), v.scalar(p::amount_rel_y)};
         const double turns = v.scalar(p::rotate_warp_dir) / 360.0;
-        const core::warp::source src(args.src, static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2)),
-                                     v.toggle(p::filter));
+        const core::warp::source src(args.src, static_cast<core::sample::wrap>(v.choice(p::wrap)), v.toggle(p::filter));
 
         // each color channel looks up the source at its own multiple of the offset
         const std::array amounts{v.scalar(p::warp_red), v.scalar(p::warp_green), v.scalar(p::warp_blue)};
@@ -69,26 +66,14 @@ namespace functional_fx_suite::effects::distortrgb
                 return core::warp::vec2{xy[0] + k * d[0], xy[1] + k * d[1]};
             });
             const core::image& dst = args.dst;
-            core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-                for (int y = y_begin; y < y_end; ++y)
-                {
-                    for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                    {
-                        dst.at(x, y)[c] =
-                            src.at(core::warp::at(field.view(), x, y), core::warp::footprint(field.view(), x, y))[c];
-                    }
-                }
+            core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+                dst.at(x, y)[c] =
+                    src.at(core::warp::at(field.view(), x, y), core::warp::footprint(field.view(), x, y))[c];
             });
         }
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    dst.at(x, y)[3] = args.src.bounds.contains(x, y) ? args.src.at(x, y)[3] : 0.0f;
-                }
-            }
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            dst.at(x, y)[3] = args.src.bounds.contains(x, y) ? args.src.at(x, y)[3] : 0.0f;
         });
     }
 

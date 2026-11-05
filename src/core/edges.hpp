@@ -12,7 +12,6 @@ namespace functional_fx_suite::core::edges
 
     // straight (unpremultiplied) rgb of `src` over its bounds; effects that leave alpha alone work on this
     [[nodiscard]] buffer straight_rgb(const image& src);
-
     // the input of edge detection: every channel gaussian-blurred by `smooth` (frame units,
     // reflected edges) and times scale * 0.05 * frame width
     void prepare(const image& img, double smooth, double scale, const frame& f);

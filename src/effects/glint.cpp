@@ -5,6 +5,7 @@
 #include "core/parallel.hpp"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <vector>
 
 namespace functional_fx_suite::effects::glint
@@ -138,38 +139,32 @@ namespace functional_fx_suite::effects::glint
         const auto under = v.scalar_f(p::glint_under_source);
         const core::image* bg = args.background;
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            std::array<float, 4> src{};
+            if (args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    std::array<float, 4> src{};
-                    if (args.src.bounds.contains(x, y))
-                    {
-                        const float* sp = args.src.at(x, y);
-                        std::ranges::transform(sp, sp + 4, src.begin(), [&](float c) { return c * source_opacity; });
-                    }
-                    std::array<float, 4> back{};
-                    if (bg != nullptr && bg->bounds.contains(x, y))
-                    {
-                        const float* bp = bg->at(x, y);
-                        back = {bp[0] * bg_brightness, bp[1] * bg_brightness, bp[2] * bg_brightness, bp[3]};
-                    }
-                    std::array<float, 4> g{};
-                    if (glint.bounds.contains(x, y))
-                    {
-                        std::copy_n(glint.at(x, y), 3, g.begin());
-                    }
-                    g[3] = std::max({g[0], g[1], g[2]}) * affect_alpha;
-                    // screened over source-over-background, or onto the background under the source
-                    float* d = dst.at(x, y);
-                    for (int c = 0; c < 4; ++c)
-                    {
-                        const float on_top = core::color::screen_super(src[c] + back[c] * (1.0f - src[3]), g[c]);
-                        const float below = src[c] + core::color::screen_super(back[c], g[c]) * (1.0f - src[3]);
-                        d[c] = core::color::lerp(on_top, below, under);
-                    }
-                }
+                const float* sp = args.src.at(x, y);
+                std::ranges::transform(sp, sp + 4, src.begin(), [&](float c) { return c * source_opacity; });
+            }
+            std::array<float, 4> back{};
+            if (bg != nullptr && bg->bounds.contains(x, y))
+            {
+                const float* bp = bg->at(x, y);
+                back = {bp[0] * bg_brightness, bp[1] * bg_brightness, bp[2] * bg_brightness, bp[3]};
+            }
+            std::array<float, 4> g{};
+            if (glint.bounds.contains(x, y))
+            {
+                std::copy_n(glint.at(x, y), 3, g.begin());
+            }
+            g[3] = std::max({g[0], g[1], g[2]}) * affect_alpha;
+            // screened over source-over-background, or onto the background under the source
+            float* d = dst.at(x, y);
+            for (int c = 0; c < 4; ++c)
+            {
+                const float on_top = core::color::screen_super(src[c] + back[c] * (1.0f - src[3]), g[c]);
+                const float below = src[c] + core::color::screen_super(back[c], g[c]) * (1.0f - src[3]);
+                d[c] = core::color::lerp(on_top, below, under);
             }
         });
     }
@@ -177,11 +172,9 @@ namespace functional_fx_suite::effects::glint
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
-        static constexpr std::array MATTE_SOURCES{core::mask::source::luma, core::mask::source::color,
-                                                  core::mask::source::alpha};
-        const core::buffer matte = core::mask::build(args, MATTE_SOURCES[std::clamp(v.choice(p::matte_type), 0, 2)],
-                                                     0.0, v.toggle(p::invert_matte));
-        const core::image* matte_view = matte.view().data != nullptr ? &matte.view() : nullptr;
+        const core::buffer matte = core::mask::build(args, core::mask::luma_color_alpha(v.choice(p::matte_type)), 0.0,
+                                                     v.toggle(p::invert_matte));
+        const core::image* matte_view = matte.view_if_set();
         core::buffer hot = core::glow::source(args, matte_view, v.scalar(p::glint_from_alpha));
         const core::rect& b = hot.view().bounds;
 
@@ -200,7 +193,7 @@ namespace functional_fx_suite::effects::glint
         core::blur::gaussian(hot.view(), pre_blur, pre_blur);
         const double t = v.scalar(p::threshold);
         // all three channels at once, like f_glow, so bright pixels keep their hue
-        core::glow::threshold(hot.view(), {t + add[0], t + add[1], t + add[2]});
+        core::glow::threshold(hot.view(), core::glow::thresholds(t, add));
 
         core::buffer glint(b, 4);
         for (int c = 0; c < 3; ++c)
@@ -213,7 +206,7 @@ namespace functional_fx_suite::effects::glint
                                       ray_size[d] * RAYS[d].weight;
                 if (weight != 0.0)
                 {
-                    const int total = static_cast<int>(std::max(0.0, ray_size[d] * size_px) + 0.5);
+                    const int total = static_cast<int>(std::lround(ray_size[d] * size_px));
                     streak(hot.view(), glint.view(), c, RAYS[d], total, static_cast<float>(weight));
                 }
             }
@@ -221,16 +214,10 @@ namespace functional_fx_suite::effects::glint
 
         if (const auto hue = v.scalar_f(p::hue_shift); hue != 0.0f)
         {
-            core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-                for (int y = y_begin; y < y_end; ++y)
-                {
-                    for (int x = b.x0; x < b.x1; ++x)
-                    {
-                        float* g = glint.view().at(x, y);
-                        const auto shifted = core::color::hue_shift_preserve_luma({g[0], g[1], g[2]}, hue);
-                        std::copy(shifted.begin(), shifted.end(), g);
-                    }
-                }
+            core::parallel::for_pixels(b, [&](int x, int y) {
+                float* g = glint.view().at(x, y);
+                const auto shifted = core::color::hue_shift_preserve_luma({g[0], g[1], g[2]}, hue);
+                std::copy(shifted.begin(), shifted.end(), g);
             });
         }
         const double blur = core::blur::amount_px(v.scalar(p::blur_glint), args.geometry);

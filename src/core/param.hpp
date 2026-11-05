@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string_view>
@@ -113,6 +114,17 @@ namespace functional_fx_suite::core
             p.enable_param = choice_param;
             p.enable_mask = mask;
             return p;
+        }
+
+        // number of options of a choice param
+        [[nodiscard]] constexpr int choice_count() const
+        {
+            return static_cast<int>(std::ranges::count(choices, '|')) + 1;
+        }
+        // whether this param is in use while its controlling choice equals `choice`
+        [[nodiscard]] constexpr bool enabled_for(int choice) const
+        {
+            return choice >= 0 && choice < 32 && ((enable_mask >> choice) & 1U) != 0;
         }
     };
 } // namespace functional_fx_suite::core

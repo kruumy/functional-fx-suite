@@ -70,9 +70,8 @@ namespace functional_fx_suite::effects::warppuddle
         const double outer_soft = v.scalar(p::outer_softness);
         const double inner_start = v.scalar(p::inner_radius) - 0.5 * inner_soft;
         const double outer_end = v.scalar(p::outer_radius) + 0.5 * outer_soft;
-        const core::buffer matte =
-            core::mask::build(args, v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_matte), v.toggle(p::invert_matte));
+        const core::buffer matte = core::mask::build(args, core::mask::luma_or_alpha(v.choice(p::matte_use)),
+                                                     v.scalar(p::blur_matte), v.toggle(p::invert_matte));
 
         const core::buffer field = core::warp::field(args, [&](int x, int y, const core::warp::vec2& xy) {
             const core::warp::vec2 d{xy[0] - center[0], xy[1] - center[1]};
@@ -88,8 +87,7 @@ namespace functional_fx_suite::effects::warppuddle
             const double k = len > 0.0 ? wave / len : 0.0;
             return core::warp::vec2{d[0] * k + xy[0] * z, d[1] * k + xy[1] * z};
         });
-        const core::warp::source src(args.src, static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2)),
-                                     v.toggle(p::filter));
+        const core::warp::source src(args.src, static_cast<core::sample::wrap>(v.choice(p::wrap)), v.toggle(p::filter));
         core::warp::apply(args, field.view(), src);
     }
 

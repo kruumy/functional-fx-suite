@@ -66,34 +66,14 @@ namespace functional_fx_suite::effects::psykostripes
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
-        const double ph = v.scalar(p::phase_start) + (v.scalar(p::phase_speed) * args.time);
-        const double fc = v.scalar(p::freq_colors);
-        const auto& color = v.vec(p::color);
-        const auto brightness = v.scalar(p::brightness);
-        const core::psyko::settings s{
-            .freq = {fc * v.scalar(p::freq_red), fc * v.scalar(p::freq_green), fc * v.scalar(p::freq_blue)},
-            .phase = {ph + v.scalar(p::phase_red), ph + v.scalar(p::phase_green), ph + v.scalar(p::phase_blue)},
-            .tint = {static_cast<float>(brightness * color[0]), static_cast<float>(brightness * color[1]),
-                     static_cast<float>(brightness * color[2])},
-            .saturation = v.scalar_f(p::saturation),
-            .scale_by_source = v.scalar_f(p::scale_by_source),
-            .scale_by_src_amp = v.scalar_f(p::scale_by_src_amp),
-            .offset = v.scalar_f(p::offset),
-            .mix = v.scalar_f(p::mix_with_source),
-            .source_blur = v.scalar(p::source_blur),
-            .source_scale = v.scalar(p::source_scale),
-        };
+        const core::psyko::settings s = core::psyko::read_settings<p>(args);
         // Stripe Mag along Stripe Dir: the stripes ramp along this vector
         const double turns = v.scalar(p::stripe_dir) / 360.0;
         const core::warp::vec2 grad = core::warp::rotate({v.scalar(p::stripe_mag), 0.0}, turns);
         core::psyko::render(args, s, [&](const core::warp::vec2& xy) { return (xy[0] * grad[0]) + (xy[1] * grad[1]); });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

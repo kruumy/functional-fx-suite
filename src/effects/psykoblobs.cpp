@@ -2,7 +2,6 @@
 #include "core/mask.hpp"
 #include "core/noise.hpp"
 #include "core/psyko.hpp"
-#include <algorithm>
 #include <array>
 
 namespace functional_fx_suite::effects::psykoblobs
@@ -77,39 +76,19 @@ namespace functional_fx_suite::effects::psykoblobs
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
-        const double ph = v.scalar(p::phase_start) + (v.scalar(p::phase_speed) * args.time);
-        const double fc = v.scalar(p::freq_colors);
-        const auto& color = v.vec(p::color);
-        const auto brightness = v.scalar(p::brightness);
-        const core::psyko::settings s{
-            .freq = {fc * v.scalar(p::freq_red), fc * v.scalar(p::freq_green), fc * v.scalar(p::freq_blue)},
-            .phase = {ph + v.scalar(p::phase_red), ph + v.scalar(p::phase_green), ph + v.scalar(p::phase_blue)},
-            .tint = {static_cast<float>(brightness * color[0]), static_cast<float>(brightness * color[1]),
-                     static_cast<float>(brightness * color[2])},
-            .saturation = v.scalar_f(p::saturation),
-            .scale_by_source = v.scalar_f(p::scale_by_source),
-            .scale_by_src_amp = v.scalar_f(p::scale_by_src_amp),
-            .offset = v.scalar_f(p::offset),
-            .mix = v.scalar_f(p::mix_with_source),
-            .source_blur = v.scalar(p::source_blur),
-            .source_scale = v.scalar(p::source_scale),
-        };
+        const core::psyko::settings s = core::psyko::read_settings<p>(args);
         const double fy = v.scalar(p::noise_freq);
         const double fx = fy * v.scalar(p::noise_freq_relx);
         const double sx = v.scalar(p::noise_shift_x);
         const double sy = v.scalar(p::noise_shift_y);
-        const int octaves = std::clamp(v.choice(p::noise_octaves), 1, 10);
+        const int octaves = v.whole(p::noise_octaves);
         const std::uint32_t seed = core::noise::seed_bits(v.scalar(p::noise_seed));
         core::psyko::render(args, s, [&](const core::warp::vec2& xy) {
             return core::noise::fbm_2d(seed, (xy[0] + sx) * fx, (xy[1] + sy) * fy, octaves);
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

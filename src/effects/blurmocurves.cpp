@@ -83,56 +83,44 @@ namespace functional_fx_suite::effects::blurmocurves
         const double bias = v.scalar(p::exposure_bias);
         const bool blur_only = v.toggle(p::blur_only);
         const auto brightness = v.scalar_f(p::brightness);
-        const int res = std::clamp(v.choice(p::blur_res), 0, 2);
-        const core::warp::source src(args.src, static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2)),
-                                     false);
+        const int res = v.choice(p::blur_res);
+        const core::warp::source src(args.src, static_cast<core::sample::wrap>(v.choice(p::wrap)), false);
         const core::frame& f = args.geometry;
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            const auto xy = core::warp::to_xy(f, x, y);
+            const core::warp::vec2 c{xy[0] - center[0], xy[1] - center[1]};
+            const auto a = core::warp::rotate(c, from.turns);
+            const auto b = core::warp::rotate(c, to.turns);
+            core::warp::vec2 xy0{};
+            core::warp::vec2 xy1{};
+            if (blur_only)
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    const auto xy = core::warp::to_xy(f, x, y);
-                    const core::warp::vec2 c{xy[0] - center[0], xy[1] - center[1]};
-                    const auto a = core::warp::rotate(c, from.turns);
-                    const auto b = core::warp::rotate(c, to.turns);
-                    core::warp::vec2 xy0{};
-                    core::warp::vec2 xy1{};
-                    if (blur_only)
-                    {
-                        // half the path this pixel's content travels between the two poses, without applying either
-                        const double kf = from.z_dist * half_inv_z;
-                        const double kt = to.z_dist * half_inv_z;
-                        const auto dv =
-                            core::warp::rotate({b[0] * kt - a[0] * kf + (to.origin[0] - from.origin[0]) * half_inv_z,
-                                                b[1] * kt - a[1] * kf + (to.origin[1] - from.origin[1]) * half_inv_z},
-                                               turns);
-                        xy0 = {xy[0] - dv[0], xy[1] - dv[1]};
-                        xy1 = {xy[0] + dv[0], xy[1] + dv[1]};
-                    }
-                    else
-                    {
-                        // where the pose at each end of the shutter samples the source
-                        xy0 = {a[0] * from.z_dist + from.origin[0], a[1] * from.z_dist + from.origin[1]};
-                        xy1 = {b[0] * to.z_dist + to.origin[0], b[1] * to.z_dist + to.origin[1]};
-                    }
-                    auto px = core::warp::line(src, core::warp::to_px(f, xy0), core::warp::to_px(f, xy1), 1.0 - bias,
-                                               bias, res);
-                    float* d = dst.at(x, y);
-                    std::transform(px.begin(), px.end(), d, [brightness](float c) { return c * brightness; });
-                }
+                // half the path this pixel's content travels between the two poses, without applying either
+                const double kf = from.z_dist * half_inv_z;
+                const double kt = to.z_dist * half_inv_z;
+                const auto dv =
+                    core::warp::rotate({b[0] * kt - a[0] * kf + (to.origin[0] - from.origin[0]) * half_inv_z,
+                                        b[1] * kt - a[1] * kf + (to.origin[1] - from.origin[1]) * half_inv_z},
+                                       turns);
+                xy0 = {xy[0] - dv[0], xy[1] - dv[1]};
+                xy1 = {xy[0] + dv[0], xy[1] + dv[1]};
             }
+            else
+            {
+                // where the pose at each end of the shutter samples the source
+                xy0 = {a[0] * from.z_dist + from.origin[0], a[1] * from.z_dist + from.origin[1]};
+                xy1 = {b[0] * to.z_dist + to.origin[0], b[1] * to.z_dist + to.origin[1]};
+            }
+            auto px =
+                core::warp::line(src, core::warp::to_px(f, xy0), core::warp::to_px(f, xy1), 1.0 - bias, bias, res);
+            float* d = dst.at(x, y);
+            std::transform(px.begin(), px.end(), d, [brightness](float c) { return c * brightness; });
         });
 
-        const core::buffer m =
-            core::mask::build(args, v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

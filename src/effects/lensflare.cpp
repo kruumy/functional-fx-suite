@@ -8,9 +8,11 @@
 #include "core/mask.hpp"
 #include "core/noise.hpp"
 #include "core/parallel.hpp"
+#include "core/sample.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <utility>
 
 namespace functional_fx_suite::effects::lensflare
 {
@@ -161,7 +163,7 @@ namespace functional_fx_suite::effects::lensflare
         param::toggle(52, "show_center_zone", "Show Center Zone"),
         param::group_end(53, "center_triggers_end"),
         param::group(54, "occlusion", "Occlusion"),
-        param::scalar(55, "occlusion_softness", "Occlusion Softness").value(0.0224).range(0, UNBOUNDED).slider(0, 0.5),
+        param::scalar(55, "occlusion_softness", "Occlusion Softness").value(0.0224).range(0, 1).slider(0, 0.5),
         param::choice(56, "occlusion_from", "Occlusion From", "None|Luma|Alpha").value(2),
         param::toggle(57, "invert_occlusion", "Invert Occlusion"),
         param::toggle(58, "use_color", "Use Color").value(1),
@@ -192,49 +194,32 @@ namespace functional_fx_suite::effects::lensflare
         return width == 0.0 ? 0.0 : std::pow(std::max(0.0, 1.0 - (dist / width)), falloff);
     }
 
-    // trigger coordinates: -1..1 across the frame on both axes, y up
-    struct trigger_space
-    {
-        core::frame f;
-        double height;
-
-        [[nodiscard]] std::array<double, 2> at(double px, double py) const
-        {
-            return {2.0 * f.to_nx(px), 2.0 * f.to_ny(py) * f.width / height};
-        }
-    };
-
-    // distance inside the frame edge pushed out by Shift Out; outside
-    // the frame it grows again unless One Way keeps it at 0
-    static double edge_distance(const std::array<double, 2>& t, double shift_out, bool one_way)
-    {
-        const double d = 1.0 + shift_out - std::max(std::abs(t[0]), std::abs(t[1]));
-        return one_way ? std::max(d, 0.0) : std::abs(d);
-    }
-
-    // 1 minus the mask's mean around the hotspot, weighted (1 - r/R)^2
+    // 1 minus the occluder's mean over a disc of `radius` px around the hotspot, weighted (1 - d/radius)^2
     static double visibility(const core::image& m, double hx, double hy, double radius)
     {
-        const auto at = [&](int x, int y) { return m.bounds.contains(x, y) ? static_cast<double>(*m.at(x, y)) : 0.0; };
+        const auto at = [&](double x, double y) {
+            const float* p = core::sample::nearest(m, x, y);
+            return p != nullptr ? static_cast<double>(*p) : 0.0;
+        };
         if (radius < 1.0)
         {
-            return 1.0 - at(static_cast<int>(std::floor(hx)), static_cast<int>(std::floor(hy)));
+            return 1.0 - at(hx, hy);
         }
+        const int r = static_cast<int>(std::ceil(radius));
+        const double cx = std::floor(hx) + 0.5;
+        const double cy = std::floor(hy) + 0.5;
         double sum = 0.0;
         double total = 0.0;
-        const int r = static_cast<int>(std::ceil(radius));
-        // a sparser grid past 128 px keeps huge softness from stalling the render
-        const int step = std::max(1, r / 128);
-        for (int y = static_cast<int>(std::floor(hy)) - r; y <= static_cast<int>(std::floor(hy)) + r; y += step)
+        for (int dy = -r; dy <= r; ++dy)
         {
-            for (int x = static_cast<int>(std::floor(hx)) - r; x <= static_cast<int>(std::floor(hx)) + r; x += step)
+            for (int dx = -r; dx <= r; ++dx)
             {
-                const double f = std::max(0.0, 1.0 - (std::hypot(x + 0.5 - hx, y + 0.5 - hy) / radius));
-                sum += f * f * at(x, y);
-                total += f * f;
+                const double w = std::max(0.0, 1.0 - (std::hypot(cx + dx - hx, cy + dy - hy) / radius));
+                sum += w * w * at(cx + dx, cy + dy);
+                total += w * w;
             }
         }
-        return total > 0.0 ? 1.0 - (sum / total) : 1.0;
+        return 1.0 - (sum / total);
     }
 
     // smooth noise over time, sharpened by Randomness
@@ -252,56 +237,30 @@ namespace functional_fx_suite::effects::lensflare
         return std::max(0.0, 1.0 + (amp * shaped));
     }
 
-    // diffraction glow: the occluder's edges near the hotspot, blurred and tinted, added to the
-    // flare
-    static void diffraction(const core::render_args& args, const core::param_values& v, const core::image& occluder,
-                            double hx, double hy, const core::color::rgb& tint, const core::image& flare)
+    // Diffraction Glow: the occluder's edges near the hotspot, blurred, tinted and added to the flare
+    static void add_diffraction(const core::image& flare, core::buffer occluder, const core::param_values& v,
+                                const core::frame& f, double hx, double hy, const core::color::rgb& tint)
     {
-        const core::frame& f = args.geometry;
-        core::buffer edges_in(occluder.bounds, 1);
-        std::copy_n(occluder.data, static_cast<std::size_t>(occluder.bounds.width()) * occluder.bounds.height(),
-                    edges_in.view().data);
-        core::edges::prepare(edges_in.view(), 0.0, 1.0, f);
-        const core::buffer edges = core::edges::magnitude(edges_in.view());
-        const double rx = core::blur::amount_px(v.scalar(p::glow_radius), f) * v.scalar(p::scale_widths);
-        const double ry = rx * v.scalar(p::rel_heights);
-        const core::rect& b = occluder.bounds;
-        core::buffer glow(b, 3);
-        const core::image& g = glow.view();
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = b.x0; x < b.x1; ++x)
-                {
-                    const double d =
-                        std::hypot((x + 0.5 - hx) / std::max(rx, 1e-6), (y + 0.5 - hy) / std::max(std::abs(ry), 1e-6));
-                    const double near = std::max(0.0, 1.0 - d);
-                    const auto e = static_cast<float>(near * near * *edges.view().at(x, y));
-                    float* o = g.at(x, y);
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        o[c] = e * tint[static_cast<std::size_t>(c)];
-                    }
-                }
-            }
+        core::edges::prepare(occluder.view(), 0.0, 1.0, f);
+        const core::buffer edges = core::edges::magnitude(occluder.view());
+        const core::image& e = edges.view();
+        const double rx =
+            std::max(core::blur::amount_px(v.scalar(p::glow_radius), f) * v.scalar(p::scale_widths), 1e-6);
+        const double ry = std::max(std::abs(rx * v.scalar(p::rel_heights)), 1e-6);
+        core::parallel::for_pixels(e.bounds, [&](int x, int y) {
+            const double near = std::max(0.0, 1.0 - std::hypot((x + 0.5 - hx) / rx, (y + 0.5 - hy) / ry));
+            *e.at(x, y) *= static_cast<float>(near * near);
         });
+        // blurring the one channel before tinting matches blurring the tinted rgb, at a third of the work
         const double width = core::blur::amount_px(v.scalar(p::glow_width), f);
-        core::blur::gaussian(g, width, width, core::blur::edge::reflect);
-        core::parallel::for_range(flare.bounds.y0, flare.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::blur::gaussian(e, width, width, core::blur::edge::reflect);
+        core::parallel::for_pixels(flare.bounds, [&](int x, int y) {
+            if (e.bounds.contains(x, y))
             {
-                for (int x = flare.bounds.x0; x < flare.bounds.x1; ++x)
+                float* o = flare.at(x, y);
+                for (std::size_t c = 0; c < 3; ++c)
                 {
-                    if (!b.contains(x, y))
-                    {
-                        continue;
-                    }
-                    float* o = flare.at(x, y);
-                    const float* s = g.at(x, y);
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        o[c] += s[c];
-                    }
+                    o[c] += tint[c] * *e.at(x, y);
                 }
             }
         });
@@ -311,78 +270,73 @@ namespace functional_fx_suite::effects::lensflare
     {
         const core::param_values& v = *args.params;
         const core::frame& f = args.geometry;
-        const trigger_space space{f, static_cast<double>(args.src.bounds.height())};
         const double hx = f.to_px_x(v.vec(p::hotspot)[0]);
         const double hy = f.to_px_y(v.vec(p::hotspot)[1]);
         const double px = f.to_px_x(v.vec(p::pivot)[0]);
         const double py = f.to_px_y(v.vec(p::pivot)[1]);
-        const std::array<double, 2> hotspot_t = space.at(hx, hy);
-        const std::array<double, 2> pivot_t = space.at(px, py);
 
-        // triggers: brightness and widths scale up as the hotspot nears the frame edge or the pivot
-        const double edge_width = v.scalar(p::edge_width);
-        const double edge_falloff = v.scalar(p::edge_falloff);
+        // triggers work in -1..1 across the frame on both axes, y up, with zones at the frame edge and the pivot
+        const double aspect = f.width / args.src.bounds.height();
+        const auto trigger_at = [&](double x, double y) {
+            return std::array{2.0 * f.to_nx(x), 2.0 * f.to_ny(y) * aspect};
+        };
+        const std::array<double, 2> pivot_t = trigger_at(px, py);
         const double shift_out = v.scalar(p::shift_out);
         const bool one_way = v.toggle(p::one_way);
+        const double edge_width = v.scalar(p::edge_width);
+        const double edge_falloff = v.scalar(p::edge_falloff);
         const double center_radius = v.scalar(p::center_radius);
         const double center_falloff = v.scalar(p::center_falloff);
-        const double edge_zone = zone(edge_distance(hotspot_t, shift_out, one_way), edge_width, edge_falloff);
-        const double center_zone =
-            zone(std::hypot(hotspot_t[0] - pivot_t[0], hotspot_t[1] - pivot_t[1]), center_radius, center_falloff);
-        const auto lerp = [](double a, double b, double t) { return a + ((b - a) * t); };
-        double bright = lerp(1.0, v.scalar(p::edge_scale_brightness), edge_zone) *
-                        lerp(1.0, v.scalar(p::center_scale_brightness), center_zone);
-        double widths = lerp(1.0, v.scalar(p::edge_scale_widths), edge_zone) *
-                        lerp(1.0, v.scalar(p::center_scale_widths), center_zone);
+        const auto edge_zone = [&](const std::array<double, 2>& t) {
+            // distance inside the edge pushed out by Shift Out; outside it grows again unless One Way holds it at 0
+            const double d = 1.0 + shift_out - std::max(std::abs(t[0]), std::abs(t[1]));
+            return zone(one_way ? std::max(d, 0.0) : std::abs(d), edge_width, edge_falloff);
+        };
+        const auto center_zone = [&](const std::array<double, 2>& t) {
+            return zone(std::hypot(t[0] - pivot_t[0], t[1] - pivot_t[1]), center_radius, center_falloff);
+        };
+        const std::array<double, 2> hotspot_t = trigger_at(hx, hy);
+        const double edge = edge_zone(hotspot_t);
+        const double center = center_zone(hotspot_t);
+        double bright =
+            std::lerp(1.0, v.scalar(p::edge_scale_brightness), edge) *
+            std::lerp(1.0, v.scalar(p::center_scale_brightness), center) *
+            flicker(v.scalar(p::flicker_amp), v.scalar(p::flicker_speed), v.scalar(p::flicker_randomness), args.time);
+        double widths = std::lerp(1.0, v.scalar(p::edge_scale_widths), edge) *
+                        std::lerp(1.0, v.scalar(p::center_scale_widths), center);
 
-        // the occluder (luma or alpha, optionally inverted) and the mask's straight color
-        core::color::rgb mask_color{1, 1, 1};
+        // occlusion dims and narrows the flare by the hidden share; Use Color filters it by the mask's color
         core::buffer occluder;
+        core::param_values::value mask_color{1, 1, 1};
         if (args.mask != nullptr)
         {
-            const int from = v.choice(p::occlusion_from);
-            if (from != 0)
+            if (const int from = v.choice(p::occlusion_from); from != 0)
             {
                 occluder = core::mask::build(args, from == 1 ? core::mask::source::luma : core::mask::source::alpha,
                                              0.0, v.toggle(p::invert_occlusion));
-                // occlusion: brightness and widths fall with the hidden share
                 const double hidden = 1.0 - visibility(occluder.view(), hx, hy,
                                                        core::blur::amount_px(v.scalar(p::occlusion_softness), f));
                 bright *= std::max(0.0, 1.0 - (v.scalar(p::occlusion_scale_brightness) * hidden));
                 widths *= std::max(0.0, 1.0 - (v.scalar(p::occlusion_scale_widths) * hidden));
             }
-            const int mx = static_cast<int>(std::floor(hx));
-            const int my = static_cast<int>(std::floor(hy));
-            if (v.toggle(p::use_color) && args.mask->bounds.contains(mx, my))
+            const float* m = v.toggle(p::use_color) ? core::sample::nearest(*args.mask, hx, hy) : nullptr;
+            if (m != nullptr && m[3] > 0.0f)
             {
-                const float* m = args.mask->at(mx, my);
-                if (m[3] > 0.0f)
-                {
-                    mask_color = {m[0] / m[3], m[1] / m[3], m[2] / m[3]};
-                }
+                mask_color = {m[0] / m[3], m[1] / m[3], m[2] / m[3]};
             }
         }
-        bright *=
-            flicker(v.scalar(p::flicker_amp), v.scalar(p::flicker_speed), v.scalar(p::flicker_randomness), args.time);
 
-        // colors: Brightness x Color, then per group
-        const auto scaled = [&](p tint, double amount) {
+        // Brightness x Color x a group's color, times `amount` and filtered by `filter`
+        const auto light = [&](p tint, double amount, const core::param_values::value& filter) {
             core::color::rgb out{};
             for (std::size_t c = 0; c < 3; ++c)
             {
-                out[c] = static_cast<float>(v.scalar(p::brightness) * v.vec(p::color)[c] * v.vec(tint)[c] * amount);
+                out[c] = static_cast<float>(v.scalar(p::brightness) * v.vec(p::color)[c] * v.vec(tint)[c] * amount *
+                                            filter[c]);
             }
             return out;
         };
-        const core::color::rgb hotspot_color = scaled(p::hotspot_color, v.scalar(p::hotspot_bright));
-        const auto with = [&](const core::color::rgb& c, double k) {
-            core::color::rgb out{};
-            for (std::size_t i = 0; i < 3; ++i)
-            {
-                out[i] = static_cast<float>(c[i] * k * mask_color[i]);
-            }
-            return out;
-        };
+        const double hotspot = v.scalar(p::hotspot_bright) * bright;
         const core::glow::atmosphere atmosphere = core::glow::make_atmosphere(
             v.scalar(p::atmosphere_amp), v.scalar(p::atmosphere_freq), v.scalar(p::atmosphere_detail),
             v.scalar(p::atmosphere_seed), v.scalar(p::atmosphere_speed), args.time);
@@ -401,9 +355,9 @@ namespace functional_fx_suite::effects::lensflare
             .rays_length = v.scalar(p::rays_length),
             .rays_thickness = v.scalar(p::rays_thickness),
             .other_width = v.scalar(p::other_width),
-            .hotspot_color = with(hotspot_color, bright),
-            .rays_color = with(hotspot_color, bright * v.scalar(p::rays_brightness)),
-            .other_color = with(scaled(p::other_color, v.scalar(p::other_brightness)), bright),
+            .hotspot_color = light(p::hotspot_color, hotspot, mask_color),
+            .rays_color = light(p::hotspot_color, hotspot * v.scalar(p::rays_brightness), mask_color),
+            .other_color = light(p::other_color, v.scalar(p::other_brightness) * bright, mask_color),
             .priority_only = v.choice(p::performance) == 1,
             .atmosphere = v.scalar(p::atmosphere_amp) != 0.0 ? &atmosphere : nullptr,
             .geometry = f,
@@ -416,34 +370,19 @@ namespace functional_fx_suite::effects::lensflare
         core::buffer flare_buf(
             core::rect{dst.bounds.x0 - pad, dst.bounds.y0 - pad, dst.bounds.x1 + pad, dst.bounds.y1 + pad}, 3);
         const core::image& flare = flare_buf.view();
-        const auto lenses = core::flare::lenses();
-        core::flare::draw(
-            flare,
-            lenses[static_cast<std::size_t>(std::clamp(v.choice(p::lens), 0, static_cast<int>(lenses.size()) - 1))],
-            settings);
+        core::flare::draw(flare, core::flare::lenses()[static_cast<std::size_t>(v.choice(p::lens))], settings);
         if (occluder.view().data != nullptr && v.scalar(p::diffraction_glow) != 0.0)
         {
-            core::color::rgb tint{};
-            for (std::size_t c = 0; c < 3; ++c)
-            {
-                tint[c] =
-                    static_cast<float>(v.vec(p::glow_color)[c] * hotspot_color[c] * v.scalar(p::diffraction_glow));
-            }
-            diffraction(args, v, occluder.view(), hx, hy, tint, flare);
+            const double glow = v.scalar(p::hotspot_bright) * v.scalar(p::diffraction_glow);
+            add_diffraction(flare, std::move(occluder), v, f, hx, hy,
+                            light(p::hotspot_color, glow, v.vec(p::glow_color)));
         }
-        const auto hue = v.scalar_f(p::hue_shift);
-        if (hue != 0.0f)
+        if (const auto hue = v.scalar_f(p::hue_shift); hue != 0.0f)
         {
-            core::parallel::for_range(flare.bounds.y0, flare.bounds.y1, [&](int y_begin, int y_end) {
-                for (int y = y_begin; y < y_end; ++y)
-                {
-                    for (int x = flare.bounds.x0; x < flare.bounds.x1; ++x)
-                    {
-                        float* o = flare.at(x, y);
-                        const core::color::rgb shifted = core::color::hue_shift_preserve_luma({o[0], o[1], o[2]}, hue);
-                        std::ranges::copy(shifted, o);
-                    }
-                }
+            core::parallel::for_pixels(flare.bounds, [&](int x, int y) {
+                float* o = flare.at(x, y);
+                const core::color::rgb shifted = core::color::hue_shift_preserve_luma({o[0], o[1], o[2]}, hue);
+                std::ranges::copy(shifted, o);
             });
         }
         core::blur::gaussian(flare, blur_px, blur_px);
@@ -455,64 +394,53 @@ namespace functional_fx_suite::effects::lensflare
         const bool tint_whites = v.toggle(p::tint_bg_whites);
         const bool show_edge = v.toggle(p::show_edge_zones);
         const bool show_center = v.toggle(p::show_center_zone);
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        const auto merge = [combine](float a, float b) {
+            return combine == 1 ? a + b : core::color::screen_super(a, b);
+        };
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            const float* fl = flare.at(x, y);
+            // alpha from the rgb max, capped at 1 so un-premultiplying keeps bright flares bright
+            const std::array<float, 4> fr{fl[0], fl[1], fl[2],
+                                          std::min(1.0f, affect_alpha * std::max({fl[0], fl[1], fl[2]}))};
+            std::array<float, 4> bg{};
+            if (args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
+                const float* s = args.src.at(x, y);
+                bg = {s[0] * bg_scale, s[1] * bg_scale, s[2] * bg_scale, s[3]};
+            }
+            std::array<float, 4> out{};
+            if (show_edge || show_center)
+            {
+                // the trigger zones in gray with the flare screened over them
+                const std::array<double, 2> t = trigger_at(x + 0.5, y + 0.5);
+                const auto z = core::color::screen(show_edge ? static_cast<float>(edge_zone(t)) : 0.0f,
+                                                   show_center ? static_cast<float>(center_zone(t)) : 0.0f);
+                out = {core::color::screen_super(fr[0], z), core::color::screen_super(fr[1], z),
+                       core::color::screen_super(fr[2], z), core::color::screen_super(fr[3], 1.0f)};
+            }
+            else if (combine == 2)
+            {
+                out = fr;
+            }
+            else if (tint_whites)
+            {
+                // the flare's luma merged, then its color added back on top of the clipped result
+                const float luma =
+                    core::color::luma(std::min(fr[0], 1.0f), std::min(fr[1], 1.0f), std::min(fr[2], 1.0f));
+                for (std::size_t c = 0; c < 4; ++c)
                 {
-                    const float* fl = flare.at(x, y);
-                    // alpha from the rgb max, capped at 1 so un-premultiplying keeps bright flares bright
-                    const std::array<float, 4> fr{fl[0], fl[1], fl[2],
-                                                  std::min(1.0f, affect_alpha * std::max({fl[0], fl[1], fl[2]}))};
-                    std::array<float, 4> bg{};
-                    if (args.src.bounds.contains(x, y))
-                    {
-                        const float* s = args.src.at(x, y);
-                        bg = {s[0] * bg_scale, s[1] * bg_scale, s[2] * bg_scale, s[3]};
-                    }
-                    std::array<float, 4> out{};
-                    const auto merge = [combine](float a, float b) {
-                        return combine == 1 ? a + b : core::color::screen_super(a, b);
-                    };
-                    if (show_edge || show_center)
-                    {
-                        // the trigger zones in gray with the flare screened over them
-                        const std::array<double, 2> t = space.at(x + 0.5, y + 0.5);
-                        const double ez =
-                            show_edge ? zone(edge_distance(t, shift_out, one_way), edge_width, edge_falloff) : 0.0;
-                        const double cz = show_center ? zone(std::hypot(t[0] - pivot_t[0], t[1] - pivot_t[1]),
-                                                             center_radius, center_falloff)
-                                                      : 0.0;
-                        const auto z = core::color::screen(static_cast<float>(ez), static_cast<float>(cz));
-                        out = {core::color::screen_super(fr[0], z), core::color::screen_super(fr[1], z),
-                               core::color::screen_super(fr[2], z), core::color::screen_super(fr[3], 1.0f)};
-                    }
-                    else if (combine == 2)
-                    {
-                        out = fr;
-                    }
-                    else if (tint_whites)
-                    {
-                        // the flare's luma merged, then its color added back on top of the clipped result
-                        const float luma =
-                            core::color::luma(std::min(fr[0], 1.0f), std::min(fr[1], 1.0f), std::min(fr[2], 1.0f));
-                        for (int c = 0; c < 4; ++c)
-                        {
-                            const auto i = static_cast<std::size_t>(c);
-                            const float merged = std::min(merge(bg[i], c < 3 ? luma : fr[3]), 1.0f);
-                            out[i] = merged + (c < 3 ? fr[i] - luma : 0.0f);
-                        }
-                    }
-                    else
-                    {
-                        for (std::size_t i = 0; i < 4; ++i)
-                        {
-                            out[i] = merge(bg[i], fr[i]);
-                        }
-                    }
-                    std::ranges::copy(out, dst.at(x, y));
+                    const float merged = std::min(merge(bg[c], c < 3 ? luma : fr[3]), 1.0f);
+                    out[c] = merged + (c < 3 ? fr[c] - luma : 0.0f);
                 }
             }
+            else
+            {
+                for (std::size_t i = 0; i < 4; ++i)
+                {
+                    out[i] = merge(bg[i], fr[i]);
+                }
+            }
+            std::ranges::copy(out, dst.at(x, y));
         });
     }
 

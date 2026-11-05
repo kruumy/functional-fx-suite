@@ -183,39 +183,27 @@ namespace functional_fx_suite::core::fft
         for (int c = 0; c < img.channels; c += 2)
         {
             const bool pair = c + 1 < img.channels;
-            parallel::for_range(0, gh, [&](int begin, int end) {
-                for (int y = begin; y < end; ++y)
+            parallel::for_pixels(rect{0, 0, gw, gh}, [&](int x, int y) {
+                int sx = x - rx;
+                int sy = y - ry;
+                complex v{};
+                if (x < w + (2 * rx) && y < h + (2 * ry) && source(sx, w) && source(sy, h))
                 {
-                    for (int x = 0; x < gw; ++x)
-                    {
-                        int sx = x - rx;
-                        int sy = y - ry;
-                        complex v{};
-                        if (x < w + (2 * rx) && y < h + (2 * ry) && source(sx, w) && source(sy, h))
-                        {
-                            const float* s = img.at(img.bounds.x0 + sx, img.bounds.y0 + sy);
-                            v = {s[c], pair ? s[c + 1] : 0.0f};
-                        }
-                        grid[cell(x, y)] = v;
-                    }
+                    const float* s = img.at(img.bounds.x0 + sx, img.bounds.y0 + sy);
+                    v = {s[c], pair ? s[c + 1] : 0.0f};
                 }
+                grid[cell(x, y)] = v;
             });
             transform_2d(grid, rows, cols, false);
             std::ranges::transform(grid, spectrum, grid.begin(), std::multiplies{});
             transform_2d(grid, rows, cols, true);
-            parallel::for_range(0, h, [&](int begin, int end) {
-                for (int y = begin; y < end; ++y)
+            parallel::for_pixels(rect{0, 0, w, h}, [&](int x, int y) {
+                const complex v = grid[cell(x + rx, y + ry)] * norm;
+                float* d = img.at(img.bounds.x0 + x, img.bounds.y0 + y);
+                d[c] = v.real();
+                if (pair)
                 {
-                    for (int x = 0; x < w; ++x)
-                    {
-                        const complex v = grid[cell(x + rx, y + ry)] * norm;
-                        float* d = img.at(img.bounds.x0 + x, img.bounds.y0 + y);
-                        d[c] = v.real();
-                        if (pair)
-                        {
-                            d[c + 1] = v.imag();
-                        }
-                    }
+                    d[c + 1] = v.imag();
                 }
             });
         }

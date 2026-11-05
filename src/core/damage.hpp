@@ -32,7 +32,7 @@ namespace functional_fx_suite::core::damage
         }
         const double phase = noise::unit(noise::combine(s + 1, period));
         const double saw = u + phase - std::floor(u + phase);
-        const double n = noise::fbm_2d(s + 2, t * noise_freq, 0.0, std::max(1, octaves)) - 0.5;
+        const double n = noise::fbm_2d(s + 2, t * noise_freq, 0.0, octaves) - 0.5;
         return {lo + (hi - lo) * (weight_saw * saw + weight_noise * n), (hi - lo) * weight_saw * freq};
     }
 

@@ -50,15 +50,9 @@ namespace functional_fx_suite::core::warp
     void apply(const render_args& args, const image& field, const source& s)
     {
         const image& dst = args.dst;
-        parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    const sample::pixel px = s.at(at(field, x, y), footprint(field, x, y));
-                    std::copy(px.begin(), px.end(), dst.at(x, y));
-                }
-            }
+        parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            const sample::pixel px = s.at(at(field, x, y), footprint(field, x, y));
+            std::copy(px.begin(), px.end(), dst.at(x, y));
         });
     }
 
@@ -102,15 +96,9 @@ namespace functional_fx_suite::core::warp
         const image& in = args.background != nullptr ? *args.background : args.src;
         buffer out(in.bounds, 1);
         const image& o = out.view();
-        parallel::for_range(o.bounds.y0, o.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = o.bounds.x0; x < o.bounds.x1; ++x)
-                {
-                    const float* p = in.at(x, y);
-                    *o.at(x, y) = color::luma(p[0], p[1], p[2]);
-                }
-            }
+        parallel::for_pixels(o.bounds, [&](int x, int y) {
+            const float* p = in.at(x, y);
+            *o.at(x, y) = color::luma(p[0], p[1], p[2]);
         });
         edges::prepare(o, blur, scale, args.geometry);
         return out;

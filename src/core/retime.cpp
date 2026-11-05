@@ -16,28 +16,18 @@ namespace functional_fx_suite::core::retime
         const buffer fetched = offset != 0 ? args.frame_at(offset) : buffer{};
         const image& from = offset != 0 ? fetched.view() : args.src;
         const image& dst = args.dst;
-        parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (from.data != nullptr && from.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (from.data != nullptr && from.bounds.contains(x, y))
-                    {
-                        std::copy_n(from.at(x, y), 4, d);
-                    }
-                    else
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                    }
-                }
+                std::copy_n(from.at(x, y), 4, d);
+            }
+            else
+            {
+                std::fill_n(d, 4, 0.0f);
             }
         });
 
-        const buffer m = mask::build(args, mask_use, blur_mask, invert_mask);
-        if (m.view().data != nullptr)
-        {
-            mask::dissolve(args, m.view());
-        }
+        mask::apply(args, mask_use, blur_mask, invert_mask);
     }
 } // namespace functional_fx_suite::core::retime

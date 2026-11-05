@@ -71,7 +71,7 @@ namespace functional_fx_suite::effects::ascii
             small ? std::span<const std::uint32_t>(FONT_3X5) : std::span<const std::uint32_t>(FONT_5X5);
         const int font_w = small ? 3 : 5;
         const int font_h = 5;
-        const int spacing = static_cast<int>(std::lround(v.scalar(p::character_spacing)));
+        const int spacing = v.whole(p::character_spacing);
         const double quant = 1.0 / static_cast<double>(font.size()); // levels including space, minus one
         const double font_px = v.scalar(p::scale) * f.width / BASE_WIDTH;
         const int block_w = font_w + spacing;
@@ -162,42 +162,36 @@ namespace functional_fx_suite::effects::ascii
         const int mode = v.choice(p::font_color_mode);
         const bool swap = v.toggle(p::swap_colors);
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!sb.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!sb.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const int fx = font_pixel(x + 0.5 - f.cx);
-                    const int fy = font_pixel(y + 0.5 - f.cy);
-                    const int cx = floor_div(fx, block_w);
-                    const int cy = floor_div(fy, block_h);
-                    const cell& c = at(cy - gy0, cx - gx0);
-                    // font pixel inside the cell; beyond the glyph is spacing
-                    const int px = fx - (cx * block_w);
-                    const int py = fy - (cy * block_h);
-                    const bool lit = px < font_w && py < font_h && ((c.glyph >> ((font_w * py) + px)) & 1U) != 0;
-
-                    const float a = args.src.at(x, y)[3];
-                    for (int i = 0; i < 3; ++i)
-                    {
-                        const auto on = static_cast<float>(swap ? bg_color[i] : font_color[i]);
-                        const auto off = static_cast<float>(swap ? font_color[i] : bg_color[i]);
-                        float value = off;
-                        if (lit)
-                        {
-                            value = mode == 2 ? c.color[i] : mode == 1 ? on * c.gray : on;
-                        }
-                        d[i] = std::clamp(value, 0.0f, 1.0f) * a;
-                    }
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const int fx = font_pixel(x + 0.5 - f.cx);
+            const int fy = font_pixel(y + 0.5 - f.cy);
+            const int cx = floor_div(fx, block_w);
+            const int cy = floor_div(fy, block_h);
+            const cell& c = at(cy - gy0, cx - gx0);
+            // font pixel inside the cell; beyond the glyph is spacing
+            const int px = fx - (cx * block_w);
+            const int py = fy - (cy * block_h);
+            const bool lit = px < font_w && py < font_h && ((c.glyph >> ((font_w * py) + px)) & 1U) != 0;
+
+            const float a = args.src.at(x, y)[3];
+            for (int i = 0; i < 3; ++i)
+            {
+                const auto on = static_cast<float>(swap ? bg_color[i] : font_color[i]);
+                const auto off = static_cast<float>(swap ? font_color[i] : bg_color[i]);
+                float value = off;
+                if (lit)
+                {
+                    value = mode == 2 ? c.color[i] : mode == 1 ? on * c.gray : on;
+                }
+                d[i] = std::clamp(value, 0.0f, 1.0f) * a;
+            }
+            d[3] = a;
         });
     }
 

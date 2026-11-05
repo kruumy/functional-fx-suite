@@ -1,5 +1,5 @@
-#include "core/blur.hpp"
 #include "core/edges.hpp"
+#include "core/blur.hpp"
 #include "core/parallel.hpp"
 #include <algorithm>
 #include <cmath>
@@ -10,16 +10,10 @@ namespace functional_fx_suite::core::edges
     {
         buffer out(src.bounds, 3);
         const image& o = out.view();
-        parallel::for_range(o.bounds.y0, o.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = o.bounds.x0; x < o.bounds.x1; ++x)
-                {
-                    const float* s = src.at(x, y);
-                    const float inv = s[3] > 0.0f ? 1.0f / s[3] : 0.0f;
-                    std::transform(s, s + 3, o.at(x, y), [inv](float c) { return c * inv; });
-                }
-            }
+        parallel::for_pixels(o.bounds, [&](int x, int y) {
+            const float* s = src.at(x, y);
+            const float inv = s[3] > 0.0f ? 1.0f / s[3] : 0.0f;
+            std::transform(s, s + 3, o.at(x, y), [inv](float c) { return c * inv; });
         });
         return out;
     }
@@ -55,18 +49,12 @@ namespace functional_fx_suite::core::edges
     {
         buffer out(img.bounds, img.channels);
         const image& o = out.view();
-        parallel::for_range(o.bounds.y0, o.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        parallel::for_pixels(o.bounds, [&](int x, int y) {
+            float* d = o.at(x, y);
+            for (int c = 0; c < img.channels; ++c)
             {
-                for (int x = o.bounds.x0; x < o.bounds.x1; ++x)
-                {
-                    float* d = o.at(x, y);
-                    for (int c = 0; c < img.channels; ++c)
-                    {
-                        const auto [gx, gy] = gradient(img, x, y, c);
-                        d[c] = std::sqrt(gx * gx + gy * gy);
-                    }
-                }
+                const auto [gx, gy] = gradient(img, x, y, c);
+                d[c] = std::sqrt(gx * gx + gy * gy);
             }
         });
         return out;

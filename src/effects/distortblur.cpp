@@ -45,37 +45,29 @@ namespace functional_fx_suite::effects::distortblur
         const core::param_values& v = *args.params;
         const double blur_lens = v.scalar(p::blur_lens);
         const core::buffer lens = core::warp::lens(args, blur_lens, blur_lens + 0.1);
-        const core::buffer matte =
-            core::mask::build(args, v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_matte), v.toggle(p::invert_matte));
+        const core::buffer matte = core::mask::build(args, core::mask::luma_or_alpha(v.choice(p::matte_use)),
+                                                     v.scalar(p::blur_matte), v.toggle(p::invert_matte));
         const core::warp::vec2 rel{v.scalar(p::amount_rel_x), v.scalar(p::amount_rel_y)};
         const double turns = v.scalar(p::rotate_blur_dir) / 360.0;
         // the blur runs along the gradient from warp - blur / 2 to warp + blur / 2
         const double warp = v.scalar(p::warp_amount);
         const double half_blur = 0.5 * v.scalar(p::blur_amount);
-        const core::warp::source src(args.src, static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2)),
-                                     false);
+        const core::warp::source src(args.src, static_cast<core::sample::wrap>(v.choice(p::wrap)), false);
         const core::frame& f = args.geometry;
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    const auto xy = core::warp::to_xy(f, x, y);
-                    const auto g0 = core::warp::lens_gradient(lens.view(), x, y);
-                    auto g = core::warp::rotate({rel[0] * g0[0], rel[1] * g0[1]}, turns);
-                    const double m = core::warp::matte(matte.view(), x, y);
-                    g = {g[0] * m, g[1] * m};
-                    const auto p0 =
-                        core::warp::to_px(f, {xy[0] + g[0] * (warp - half_blur), xy[1] + g[1] * (warp - half_blur)});
-                    const auto p1 =
-                        core::warp::to_px(f, {xy[0] + g[0] * (warp + half_blur), xy[1] + g[1] * (warp + half_blur)});
-                    const auto px = core::warp::line(src, p0, p1, 1.0, 1.0, 0);
-                    std::copy(px.begin(), px.end(), dst.at(x, y));
-                }
-            }
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            const auto xy = core::warp::to_xy(f, x, y);
+            const auto g0 = core::warp::lens_gradient(lens.view(), x, y);
+            auto g = core::warp::rotate({rel[0] * g0[0], rel[1] * g0[1]}, turns);
+            const double m = core::warp::matte(matte.view(), x, y);
+            g = {g[0] * m, g[1] * m};
+            const auto p0 =
+                core::warp::to_px(f, {xy[0] + g[0] * (warp - half_blur), xy[1] + g[1] * (warp - half_blur)});
+            const auto p1 =
+                core::warp::to_px(f, {xy[0] + g[0] * (warp + half_blur), xy[1] + g[1] * (warp + half_blur)});
+            const auto px = core::warp::line(src, p0, p1, 1.0, 1.0, 0);
+            std::copy(px.begin(), px.end(), dst.at(x, y));
         });
     }
 

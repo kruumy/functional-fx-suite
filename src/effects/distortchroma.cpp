@@ -57,9 +57,8 @@ namespace functional_fx_suite::effects::distortchroma
         const core::param_values& v = *args.params;
         const double blur_lens = v.scalar(p::blur_lens);
         const core::buffer lens = core::warp::lens(args, blur_lens, v.scalar(p::amount) * (blur_lens + 0.1));
-        const core::buffer matte =
-            core::mask::build(args, v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_matte), v.toggle(p::invert_matte));
+        const core::buffer matte = core::mask::build(args, core::mask::luma_or_alpha(v.choice(p::matte_use)),
+                                                     v.scalar(p::blur_matte), v.toggle(p::invert_matte));
         const core::warp::vec2 rel{v.scalar(p::amount_rel_x), v.scalar(p::amount_rel_y)};
         const double turns = v.scalar(p::rotate_warp_dir) / 360.0;
         const auto offset = [&](int x, int y) {
@@ -78,23 +77,15 @@ namespace functional_fx_suite::effects::distortchroma
         const core::buffer from = end_field(v.scalar(p::warp_red));
         const core::buffer to = end_field(v.scalar(p::warp_blue));
         const std::array colors{v.vec(p::color1), v.vec(p::color2), v.vec(p::color3)};
-        const auto weights =
-            core::warp::spectrum(std::clamp(v.choice(p::steps), 3, 100), colors, v.toggle(p::white_balance), 1.0);
-        const core::warp::source src(args.src, static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2)),
-                                     v.toggle(p::filter));
+        const auto weights = core::warp::spectrum(v.whole(p::steps), colors, v.toggle(p::white_balance), 1.0);
+        const core::warp::source src(args.src, static_cast<core::sample::wrap>(v.choice(p::wrap)), v.toggle(p::filter));
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    const auto px = core::warp::chroma(
-                        src, core::warp::at(from.view(), x, y), core::warp::at(to.view(), x, y),
-                        core::warp::footprint(from.view(), x, y), core::warp::footprint(to.view(), x, y), weights);
-                    std::copy(px.begin(), px.end(), dst.at(x, y));
-                }
-            }
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            const auto px = core::warp::chroma(src, core::warp::at(from.view(), x, y), core::warp::at(to.view(), x, y),
+                                               core::warp::footprint(from.view(), x, y),
+                                               core::warp::footprint(to.view(), x, y), weights);
+            std::copy(px.begin(), px.end(), dst.at(x, y));
         });
     }
 

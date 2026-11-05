@@ -7,6 +7,7 @@
 #include "core/buffer.hpp"
 #include "core/param_values.hpp"
 #include "effects/catalog.hpp"
+#include "test_support.hpp"
 
 #define NOMINMAX
 #include <windows.h>
@@ -38,16 +39,6 @@ namespace functional_fx_suite::tests::ae_host_test
     };
 
     static host_state state;
-    static int failures = 0;
-
-    static void check(bool ok, std::string_view what)
-    {
-        if (!ok)
-        {
-            ++failures;
-            std::cerr << "FAIL: " << what << '\n';
-        }
-    }
 
     static PF_Err add_param(PF_ProgPtr, PF_ParamIndex, PF_ParamDefPtr def)
     {
@@ -164,16 +155,6 @@ namespace functional_fx_suite::tests::ae_host_test
         }
     };
 
-    // the spot moves 5 px per frame; `frame` counts from now
-    static float pattern(int x, int y, int c, int w, int h, int frame)
-    {
-        const double spot = std::exp(-std::pow(std::hypot(x - w * 0.3 - 5.0 * frame, y - h * 0.4) / 6.0, 2.0));
-        const double v = c == 0   ? 0.2 + 0.5 * x / w + spot
-                         : c == 1 ? 0.3 + spot
-                                  : ((x / 8 + y / 8) % 2 == 0 ? 0.8 : 0.2);
-        return static_cast<float>(std::min(v, 1.0));
-    }
-
     template <class Pixel>
     static void run_depth(entry_fn entry, PF_InData& in, PF_OutData& out, const core::effect& fx, PF_PixelFormat format,
                           float max_value, double tolerance)
@@ -197,7 +178,8 @@ namespace functional_fx_suite::tests::ae_host_test
                     Pixel& p = it->second.host.pixels[static_cast<std::size_t>(y) * W + x];
                     using channel = decltype(p.red);
                     const auto q = [&](int c) {
-                        const float v = pattern(x, y, c, W, H, frame);
+                        // clamped so 8-bit worlds can hold the spot
+                        const auto v = static_cast<float>(std::min(spot_value(x, y, c, W, H, frame), 1.0));
                         return static_cast<channel>(max_value == 1.0f ? v : std::round(v * max_value));
                     };
                     p.alpha = static_cast<channel>(max_value);
@@ -262,29 +244,31 @@ namespace functional_fx_suite::tests::ae_host_test
         ra.time = static_cast<double>(in.current_time) / in.time_scale;
         ra.frame_duration = static_cast<double>(in.time_step) / in.time_scale;
         // the plugin checks out the input at each offset under the ids after the fixed inputs (0..2)
-        const std::vector<int> offsets =
-            fx.frame_offsets != nullptr ? fx.frame_offsets(values, ra.frame_number()) : std::vector<int>{};
+        const std::vector<int> offsets = fx.offsets(values, ra.frame_number());
         for (std::size_t i = 0; i < offsets.size(); ++i)
         {
             const auto it = state.input_times.find(static_cast<A_long>(3 + i));
             check(it != state.input_times.end() && it->second == in.current_time + offsets[i] * in.time_step,
                   std::format("{}: pre-render checks out the input {} frames from now", fx.name, offsets[i]));
         }
+        std::vector<int> fetched;
+        bool repeated = false;
         ra.frame_at = [&](int offset) {
             core::buffer b;
+            repeated = repeated || std::ranges::find(fetched, offset) != fetched.end();
+            fetched.push_back(offset);
             if (std::ranges::find(offsets, offset) != offsets.end())
             {
-                const core::image& f = input_at(offset).floats.view();
-                b.reset(f.bounds, 4);
-                std::copy_n(f.data, static_cast<std::size_t>(f.bounds.width()) * f.bounds.height() * 4, b.view().data);
+                b = core::buffer::copy_of(input_at(offset).floats.view());
             }
             return b;
         };
         ra.src = src.view();
         ra.dst = expected.view();
         ra.params = &values;
-        ra.geometry = core::frame{W * 0.5, H * 0.5, static_cast<double>(W)};
+        ra.geometry = centered_frame(W, H);
         fx.render(ra);
+        check(!repeated, std::format("{}: render fetches each frame offset at most once", fx.name));
 
         double max_diff = 0.0;
         for (int y = 0; y < H; ++y)
@@ -370,7 +354,5 @@ int main(int argc, char** argv)
     {
         functional_fx_suite::tests::ae_host_test::run_plugin(argv[i]);
     }
-    const int failures = functional_fx_suite::tests::ae_host_test::failures;
-    std::cout << (failures == 0 ? "all AE host tests passed\n" : std::format("{} AE host test(s) failed\n", failures));
-    return failures == 0 ? 0 : 1;
+    return functional_fx_suite::tests::finish("AE host ");
 }

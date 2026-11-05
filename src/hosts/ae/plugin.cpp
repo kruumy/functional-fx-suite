@@ -167,7 +167,7 @@ namespace functional_fx_suite::hosts::ae::plugin
             break;
         case core::param_kind::choice:
             def.param_type = PF_Param_POPUP;
-            def.u.pd.num_choices = static_cast<A_short>(std::ranges::count(p.choices, '|') + 1);
+            def.u.pd.num_choices = static_cast<A_short>(p.choice_count());
             def.u.pd.value = def.u.pd.dephault = static_cast<A_short>(std::lround(p.def[0]) + 1);
             // table strings are literals, so the pointer stays valid and NUL terminated
             def.u.pd.u.namesptr = p.choices.data();
@@ -268,7 +268,7 @@ namespace functional_fx_suite::hosts::ae::plugin
                 continue;
             }
             const int choice = params[l.first_param + p.enable_param]->u.pd.value - 1;
-            const bool enabled = choice >= 0 && choice < 32 && ((p.enable_mask >> choice) & 1U) != 0;
+            const bool enabled = p.enabled_for(choice);
             const int index = l.first_param + static_cast<int>(i);
             hidden.emplace_back(index, !enabled);
             PF_ParamDef copy = *params[index];
@@ -301,12 +301,18 @@ namespace functional_fx_suite::hosts::ae::plugin
     static core::param_values read_params(PF_InData* in, const core::effect& fx, const layout& l, const core::frame& f,
                                           A_long time);
 
-    // `offset` frames from now in layer time, kept in A_long range for huge shifts
+    // a layer time in ticks, kept in A_long range for huge shifts
+    static A_long layer_time(double ticks)
+    {
+        return static_cast<A_long>(
+            std::lround(std::clamp(ticks, static_cast<double>(std::numeric_limits<A_long>::min()),
+                                   static_cast<double>(std::numeric_limits<A_long>::max()))));
+    }
+
+    // `offset` frames from now in layer time
     static A_long frame_time(const PF_InData* in, int offset)
     {
-        const long long t = static_cast<long long>(in->current_time) + static_cast<long long>(offset) * in->time_step;
-        return static_cast<A_long>(
-            std::clamp<long long>(t, std::numeric_limits<A_long>::min(), std::numeric_limits<A_long>::max()));
+        return layer_time(static_cast<double>(in->current_time) + (static_cast<double>(offset) * in->time_step));
     }
 
     // the render's time as the core sees it
@@ -348,7 +354,7 @@ namespace functional_fx_suite::hosts::ae::plugin
             core::render_args timing;
             set_time(timing, in);
             const std::vector<int> offsets =
-                fx.frame_offsets(read_params(in, fx, l, layer_frame(in), in->current_time), timing.frame_number());
+                fx.offsets(read_params(in, fx, l, layer_frame(in), in->current_time), timing.frame_number());
             for (std::size_t i = 0; i < offsets.size(); ++i)
             {
                 check(extra->cb->checkout_layer(in->effect_ref, 0,
@@ -473,8 +479,7 @@ namespace functional_fx_suite::hosts::ae::plugin
         core::render_args args;
         set_time(args, in);
         // the same offsets as pre-render: same params, same time
-        const std::vector<int> offsets =
-            fx.frame_offsets != nullptr ? fx.frame_offsets(values, args.frame_number()) : std::vector<int>{};
+        const std::vector<int> offsets = fx.offsets(values, args.frame_number());
         args.frame_at = [&](int offset) {
             core::buffer b;
             const auto it = std::ranges::find(offsets, offset);
@@ -495,12 +500,12 @@ namespace functional_fx_suite::hosts::ae::plugin
         };
         args.src = src.view();
         args.dst = dst.view();
-        args.mask = mask.view().data != nullptr ? &mask.view() : nullptr;
-        args.background = background.view().data != nullptr ? &background.view() : nullptr;
+        args.mask = mask.view_if_set();
+        args.background = background.view_if_set();
         args.params = &values;
         args.geometry = f;
         args.params_at = [&](double seconds) {
-            return read_params(in, fx, l, f, static_cast<A_long>(std::lround(seconds * in->time_scale)));
+            return read_params(in, fx, l, f, layer_time(seconds * in->time_scale));
         };
         fx.render(args);
         pixels::write(dst.view(), *output, format);

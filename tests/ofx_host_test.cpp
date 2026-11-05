@@ -4,6 +4,7 @@
 #include "ofxImageEffect.h"
 #include "ofxParam.h"
 #include "ofxProperty.h"
+#include "test_support.hpp"
 
 #define NOMINMAX
 #include <windows.h>
@@ -53,17 +54,6 @@ namespace functional_fx_suite::tests::ofx_host_test
         double frame = 0;                   // render time
         std::map<int, core::buffer> others; // the source at other frames, by offset from `frame`
     };
-
-    static int failures = 0;
-
-    static void check(bool ok, std::string_view what)
-    {
-        if (!ok)
-        {
-            ++failures;
-            std::cerr << "FAIL: " << what << '\n';
-        }
-    }
 
     static prop_set* ps(OfxPropertySetHandle h)
     {
@@ -190,8 +180,6 @@ namespace functional_fx_suite::tests::ofx_host_test
 
     static effect* current = nullptr;
 
-    static core::buffer card(int w, int h, int frame);
-
     // images are float RGBA, premultiplied, covering the whole 0..w x 0..h frame
     static OfxStatus clip_get_image(OfxImageClipHandle c, OfxTime time, const OfxRectD*, OfxPropertySetHandle* out)
     {
@@ -206,7 +194,7 @@ namespace functional_fx_suite::tests::ofx_host_test
         const core::rect& b = current->source.view().bounds;
         if (is_source && offset != 0 && !current->others.contains(offset))
         {
-            current->others.emplace(offset, card(b.width(), b.height(), offset));
+            current->others.emplace(offset, spot_card(b.width(), b.height(), offset));
         }
         const core::image& img = (is_output     ? current->output
                                   : offset != 0 ? current->others.at(offset)
@@ -371,25 +359,6 @@ namespace functional_fx_suite::tests::ofx_host_test
                                            : nullptr;
     }
 
-    // the spot moves 5 px per frame; `frame` counts from the render time
-    static core::buffer card(int w, int h, int frame)
-    {
-        core::buffer b(core::rect{0, 0, w, h}, 4);
-        for (int y = 0; y < h; ++y)
-        {
-            for (int x = 0; x < w; ++x)
-            {
-                float* p = b.view().at(x, y);
-                const double spot = std::exp(-std::pow(std::hypot(x - w * 0.3 - 5.0 * frame, y - h * 0.4) / 6.0, 2.0));
-                p[0] = static_cast<float>(0.2 + 0.5 * x / w + spot);
-                p[1] = static_cast<float>(0.3 + spot);
-                p[2] = (x / 8 + y / 8) % 2 == 0 ? 0.8f : 0.2f;
-                p[3] = 1.0f;
-            }
-        }
-        return b;
-    }
-
     static void run_plugin(const std::string& path)
     {
         HMODULE lib = LoadLibraryA(path.c_str());
@@ -440,7 +409,7 @@ namespace functional_fx_suite::tests::ofx_host_test
         constexpr int H = 64;
         constexpr double FRAME = 7.0;
         constexpr double FPS = 24.0;
-        e.source = card(W, H, 0);
+        e.source = spot_card(W, H, 0);
         e.frame = FRAME;
         e.output.reset(core::rect{0, 0, W, H}, 4);
         set_value(handle(e.clips[kOfxImageEffectOutputClipName]->props), kOfxImageEffectPropFrameRate, 0, FPS);
@@ -466,9 +435,7 @@ namespace functional_fx_suite::tests::ofx_host_test
         core::render_args ra;
         ra.frame_duration = 1.0 / FPS;
         ra.time = FRAME / FPS;
-        const std::vector<int> offsets = reference->frame_offsets != nullptr
-                                             ? reference->frame_offsets(values, ra.frame_number())
-                                             : std::vector<int>{};
+        const std::vector<int> offsets = reference->offsets(values, ra.frame_number());
         int temporal = -1;
         get_value(handle(e.props), kOfxImageEffectPropTemporalClipAccess, 0, &temporal);
         check(temporal == (reference->frame_offsets != nullptr ? 1 : 0), std::format("{}: temporal access", label));
@@ -497,12 +464,15 @@ namespace functional_fx_suite::tests::ofx_host_test
               std::format("{}: frames needed", label));
         // the frames the core asks for, served as the mock host serves them
         std::set<int> fetched;
+        std::set<int> calls;
+        bool repeated = false;
         ra.frame_at = [&](int offset) {
             core::buffer b;
+            repeated = repeated || !calls.insert(offset).second;
             if (std::ranges::find(offsets, offset) != offsets.end())
             {
                 fetched.insert(offset);
-                b = card(W, H, offset);
+                b = spot_card(W, H, offset);
             }
             return b;
         };
@@ -510,10 +480,11 @@ namespace functional_fx_suite::tests::ofx_host_test
         ra.src = e.source.view();
         ra.dst = expected.view();
         ra.params = &values;
-        ra.geometry = core::frame{W * 0.5, H * 0.5, static_cast<double>(W)};
+        ra.geometry = centered_frame(W, H);
         reference->render(ra);
         check(std::ranges::equal(e.others | std::views::keys, fetched),
               std::format("{}: render fetches the source at the frames the core reads", label));
+        check(!repeated, std::format("{}: render fetches each frame offset at most once", label));
 
         double max_diff = 0.0;
         double changed = 0.0;
@@ -543,8 +514,5 @@ int main(int argc, char** argv)
     {
         functional_fx_suite::tests::ofx_host_test::run_plugin(argv[i]);
     }
-    const int failures = functional_fx_suite::tests::ofx_host_test::failures;
-    std::cout << (failures == 0 ? "all OFX host tests passed\n"
-                                : std::format("{} OFX host test(s) failed\n", failures));
-    return failures == 0 ? 0 : 1;
+    return functional_fx_suite::tests::finish("OFX host ");
 }

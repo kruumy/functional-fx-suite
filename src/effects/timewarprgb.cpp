@@ -49,17 +49,12 @@ namespace functional_fx_suite::effects::timewarprgb
 
     static constexpr std::array SHIFTS{p::red_shift_frames, p::green_shift_frames, p::blue_shift_frames};
 
-    static int shift(const core::param_values& v, p channel)
-    {
-        return static_cast<int>(std::lround(std::clamp(v.scalar(channel), -UNBOUNDED, UNBOUNDED)));
-    }
-
     static std::vector<int> frame_offsets(const core::param_values& v, int /*frame*/)
     {
         std::vector<int> offsets;
         for (const p channel : SHIFTS)
         {
-            const int n = shift(v, channel);
+            const int n = v.whole(channel);
             if (n != 0 && std::ranges::find(offsets, n) == offsets.end())
             {
                 offsets.push_back(n);
@@ -83,8 +78,7 @@ namespace functional_fx_suite::effects::timewarprgb
     {
         const core::param_values& v = *args.params;
         // each channel's frame, fetched once per distinct shift
-        const std::array n{shift(v, p::red_shift_frames), shift(v, p::green_shift_frames),
-                           shift(v, p::blue_shift_frames)};
+        const std::array n{v.whole(p::red_shift_frames), v.whole(p::green_shift_frames), v.whole(p::blue_shift_frames)};
         std::array<core::buffer, 3> fetched;
         std::array<core::image, 3> frames;
         for (std::size_t i = 0; i < n.size(); ++i)
@@ -99,41 +93,30 @@ namespace functional_fx_suite::effects::timewarprgb
         const auto clamp_chroma = v.scalar_f(p::clamp_chroma);
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!args.src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    core::color::rgb c{straight(frames[0], x, y, 0), straight(frames[1], x, y, 1),
-                                       straight(frames[2], x, y, 2)};
-                    const float chroma = std::ranges::max(c) - std::ranges::min(c);
-                    if (clamp_chroma < 1.0f && chroma > 0.0f)
-                    {
-                        c = core::color::sat_scale(c, std::min(1.0f, clamp_chroma / chroma));
-                    }
-                    // the current frame's alpha
-                    const float a = args.src.at(x, y)[3];
-                    d[0] = c[0] * a;
-                    d[1] = c[1] * a;
-                    d[2] = c[2] * a;
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            core::color::rgb c{straight(frames[0], x, y, 0), straight(frames[1], x, y, 1),
+                               straight(frames[2], x, y, 2)};
+            const float chroma = std::ranges::max(c) - std::ranges::min(c);
+            if (clamp_chroma < 1.0f && chroma > 0.0f)
+            {
+                c = core::color::sat_scale(c, std::min(1.0f, clamp_chroma / chroma));
+            }
+            // the current frame's alpha
+            const float a = args.src.at(x, y)[3];
+            d[0] = c[0] * a;
+            d[1] = c[1] * a;
+            d[2] = c[2] * a;
+            d[3] = a;
         });
 
-        const core::buffer m =
-            core::mask::build(args, v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma,
-                              v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

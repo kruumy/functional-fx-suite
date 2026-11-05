@@ -158,14 +158,7 @@ namespace functional_fx_suite::effects::zdefocus
         const double width = v.scalar(p::defocus_width);
         const double boost = v.scalar(p::boost_highlights);
         const float threshold = v.scalar_f(p::highlight_threshold);
-        const core::zdepth::layers layers{
-            .count = std::clamp(static_cast<int>(std::lround(v.scalar(p::layers))), 2, 50),
-            .focal_depth = focal,
-            .depth_of_field = dof,
-            .rel_near = v.scalar(p::width_rel_near),
-            .rel_far = v.scalar(p::width_rel_far),
-            .comp = v.choice(p::layer_mode) == 0,
-        };
+        const core::zdepth::layers layers = core::zdepth::read_layers<p>(v);
         core::parallel::for_range(s.bounds.y0, s.bounds.y1, [&](int y_begin, int y_end) {
             for (int y = y_begin; y < y_end; ++y)
             {
@@ -174,9 +167,7 @@ namespace functional_fx_suite::effects::zdefocus
                     float* o = s.at(x, y);
                     std::transform(o, o + 3, o, [use_gamma](float c) { return core::color::gamma(c, use_gamma); });
                     // distance outside the focus zone, scaled near or far
-                    const double zv = *z.view().at(x, y);
-                    const double focus = std::max(0.0, std::abs(zv - focal) - (dof / 2.0)) *
-                                         (zv < focal ? layers.rel_near : layers.rel_far);
+                    const double focus = core::zdepth::focus_distance(layers, *z.view().at(x, y));
                     // boost highlights: rgb x (1 + amount x max(0, max(rgb) - threshold))
                     const double size = width * focus;
                     const auto amount = static_cast<float>(1000.0 * boost * boost * size * size);

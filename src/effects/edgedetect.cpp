@@ -61,7 +61,7 @@ namespace functional_fx_suite::effects::edgedetect
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
-        const auto mode = static_cast<style>(std::clamp(v.choice(p::style), 0, 2));
+        const auto mode = static_cast<style>(v.choice(p::style));
         const std::array weight{v.scalar_f(p::weight_red), v.scalar_f(p::weight_green), v.scalar_f(p::weight_blue)};
         const core::buffer straight = core::edges::straight_rgb(args.src);
         const core::image& s = straight.view();
@@ -132,12 +132,8 @@ namespace functional_fx_suite::effects::edgedetect
             }
         });
 
-        const auto mask_mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mask_mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

@@ -51,18 +51,12 @@ namespace functional_fx_suite::effects::mosaic
         const double shift_y = v.vec(p::pixel_shift)[1];
 
         // works on premultiplied rgba
-        core::buffer smooth(args.src.bounds, 4);
+        const core::buffer smooth = core::buffer::copy_of(args.src);
         const core::image& s = smooth.view();
-        core::parallel::for_range(s.bounds.y0, s.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                std::copy_n(args.src.row(y), static_cast<std::size_t>(s.bounds.width()) * 4, s.row(y));
-            }
-        });
         const double amount = core::blur::amount_px(v.scalar(p::smooth_colors), f);
         core::blur::gaussian(s, amount, amount);
 
-        const auto mode = v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
+        const auto mode = core::mask::luma_or_alpha(v.choice(p::matte_use));
         const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_matte), v.toggle(p::invert_matte));
         const core::image& mask = m.view();
         const float mix = v.scalar_f(p::mix_with_source);
@@ -89,9 +83,8 @@ namespace functional_fx_suite::effects::mosaic
                     float k = 1.0f;
                     if (mask.data != nullptr)
                     {
-                        const int mx = static_cast<int>(std::floor(px));
-                        const int my = static_cast<int>(std::floor(py));
-                        k = mask.bounds.contains(mx, my) ? *mask.at(mx, my) : 0.0f;
+                        const float* matte_px = core::sample::nearest(mask, px, py);
+                        k = matte_px != nullptr ? *matte_px : 0.0f;
                     }
                     const float* src = args.src.at(x, y);
                     for (int c = 0; c < 4; ++c)

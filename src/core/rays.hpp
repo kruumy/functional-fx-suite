@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/buffer.hpp"
+#include "core/noise.hpp"
 #include "core/render_args.hpp"
 #include <array>
 #include <cstdint>
@@ -40,6 +41,29 @@ namespace functional_fx_suite::core::rays
         double y = 0;
         [[nodiscard]] float at(double nx, double ny) const;
     };
+
+    // the path from the params f_rays and f_edgerays both declare, `P` being the effect's param enum;
+    // `brightness` is the value of their brightness (or darkness) param
+    template <class P> [[nodiscard]] path read_path(const param_values& v, bool dark, double brightness)
+    {
+        path s;
+        s.cx = v.vec(P::center)[0];
+        s.cy = v.vec(P::center)[1];
+        s.lengths =
+            channel_lengths(v.scalar(P::rays_length),
+                            {v.scalar(P::length_red), v.scalar(P::length_green), v.scalar(P::length_blue)}, dark);
+        s.shape = ray_shape{v.scalar(P::reverse_rays), v.scalar(P::bias_outer_bright), brightness};
+        s.res_level = v.choice(P::rays_res);
+        return s;
+    }
+
+    // the Shimmer group at `time` seconds, `P` being the effect's param enum
+    template <class P> [[nodiscard]] shimmer read_shimmer(const param_values& v, double time)
+    {
+        return shimmer{v.scalar(P::shimmer_amp), v.scalar(P::shimmer_freq), noise::seed_bits(v.scalar(P::shimmer_seed)),
+                       v.scalar(P::shimmer_shift_x) + time * v.scalar(P::shimmer_speed_x),
+                       v.scalar(P::shimmer_shift_y) + time * v.scalar(P::shimmer_speed_y)};
+    }
 
     // streaks the generator's rgb toward the centre on a grid reduced by the Rays Res level
     [[nodiscard]] buffer streak(const render_args& args, const path& s, const image& gen);

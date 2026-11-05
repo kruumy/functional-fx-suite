@@ -1,7 +1,6 @@
 #include "core/glow.hpp"
 #include "core/mask.hpp"
 #include "effects/glow.hpp"
-#include <algorithm>
 #include <array>
 
 namespace functional_fx_suite::effects::glow
@@ -78,11 +77,11 @@ namespace functional_fx_suite::effects::glow
     {
         const core::param_values& v = *args.params;
         const core::buffer matte = core::mask::build(args, core::mask::source::color, 0.0, v.toggle(p::invert_matte));
-        const core::image* matte_view = matte.view().data != nullptr ? &matte.view() : nullptr;
+        const core::image* matte_view = matte.view_if_set();
         const core::buffer glow = core::glow::source(args, matte_view, v.scalar(p::glow_from_alpha));
         const auto& add = v.vec(p::threshold_add_color);
         const double t = v.scalar(p::threshold);
-        core::glow::threshold(glow.view(), {t + add[0], t + add[1], t + add[2]});
+        core::glow::threshold(glow.view(), core::glow::thresholds(t, add));
 
         // Show Threshold stops at the thresholded image
         const bool show = v.choice(p::show) == 1;
@@ -110,7 +109,7 @@ namespace functional_fx_suite::effects::glow
 
         const core::glow::composite_settings settings{
             .affect_alpha = v.scalar(p::affect_alpha),
-            .mode = static_cast<core::glow::combine>(std::clamp(v.choice(p::combine), 0, 4)),
+            .mode = static_cast<core::glow::combine>(v.choice(p::combine)),
             .glow_under_source = v.scalar(p::glow_under_source),
             .light_bg = v.scalar(p::light_background),
             .scale_background = v.scalar(p::bg_brightness),

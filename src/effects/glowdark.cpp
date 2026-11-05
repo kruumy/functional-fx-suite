@@ -64,36 +64,33 @@ namespace functional_fx_suite::effects::glowdark
     {
         const core::param_values& v = *args.params;
         const core::buffer matte = core::mask::build(args, core::mask::source::color, 0.0, v.toggle(p::invert_matte));
-        const core::image* m = matte.view().data != nullptr ? &matte.view() : nullptr;
+        const core::image* m = matte.view_if_set();
         const core::buffer s = core::glow::source(args, nullptr, v.scalar(p::glow_from_alpha));
         const core::rect& b = s.view().bounds;
         const auto th = v.scalar_f(p::threshold);
 
         // how far below the threshold each channel is, 0..1; the matte lifts what it excludes out of the darks
         core::buffer blacks(b, 4);
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(b, [&](int x, int y) {
+            const float* c = s.view().at(x, y);
+            float* d = blacks.view().at(x, y);
+            for (int k = 0; k < 3; ++k)
             {
-                for (int x = b.x0; x < b.x1; ++x)
-                {
-                    const float* c = s.view().at(x, y);
-                    float* d = blacks.view().at(x, y);
-                    for (int k = 0; k < 3; ++k)
-                    {
-                        const float keep = m != nullptr && m->bounds.contains(x, y) ? m->at(x, y)[k] : 1.0f;
-                        const float lifted = core::color::screen_super(c[k], 1.0f - keep);
-                        d[k] = th > 0.0f ? std::max(0.0f, th - lifted) / th : 0.0f;
-                    }
-                }
+                const float keep = m != nullptr && m->bounds.contains(x, y) ? m->at(x, y)[k] : 1.0f;
+                const float lifted = core::color::screen_super(c[k], 1.0f - keep);
+                d[k] = th > 0.0f ? std::max(0.0f, th - lifted) / th : 0.0f;
             }
         });
         const bool show = v.choice(p::show) == 1;
 
         // the darks spread by a gaussian, scaled by Darkness, optionally broken up by the atmosphere
-        core::buffer spread(b, 4);
-        std::copy_n(blacks.view().data, static_cast<std::size_t>(b.width()) * b.height() * 4, spread.view().data);
-        const double px = core::blur::amount_px(v.scalar(p::glow_width), args.geometry);
-        core::blur::gaussian(spread.view(), px * v.scalar(p::width_x), px * v.scalar(p::width_y));
+        core::buffer spread;
+        if (!show)
+        {
+            spread = core::buffer::copy_of(blacks.view());
+            const double px = core::blur::amount_px(v.scalar(p::glow_width), args.geometry);
+            core::blur::gaussian(spread.view(), px * v.scalar(p::width_x), px * v.scalar(p::width_y));
+        }
         const float gain = 2.0f * v.scalar_f(p::darkness);
         const auto saturation = v.scalar_f(p::glow_saturation);
         const auto atmosphere = core::glow::make_atmosphere(
@@ -104,48 +101,41 @@ namespace functional_fx_suite::effects::glowdark
         const auto under = v.scalar_f(p::glow_under_source);
         const core::image* bg = args.background;
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!b.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!b.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    if (show)
-                    {
-                        std::copy_n(blacks.view().at(x, y), 3, d);
-                        d[3] = 1.0f;
-                        continue;
-                    }
-                    const float* sp = spread.view().at(x, y);
-                    core::color::rgb dark =
-                        core::color::sat_scale({sp[0] * gain, sp[1] * gain, sp[2] * gain}, saturation);
-                    if (atmosphere.amp != 0.0)
-                    {
-                        const float k = atmosphere.at(args.geometry.to_nx(x + 0.5), args.geometry.to_ny(y + 0.5));
-                        std::ranges::for_each(dark, [&](float& c) { c = std::clamp(k * c, 0.0f, th * gain); });
-                    }
-                    const float* src = args.src.at(x, y);
-                    std::array<float, 4> back{};
-                    if (bg != nullptr && bg->bounds.contains(x, y))
-                    {
-                        const float* bp = bg->at(x, y);
-                        back = {bp[0] * bg_brightness, bp[1] * bg_brightness, bp[2] * bg_brightness, bp[3]};
-                    }
-                    const float a = src[3] * source_opacity;
-                    for (int k = 0; k < 3; ++k)
-                    {
-                        const float front = src[k] * source_opacity;
-                        const float over = front + back[k] * (1.0f - a);
-                        d[k] = over * (1.0f - dark[k]) + under * front * dark[k];
-                    }
-                    d[3] = a + back[3] * (1.0f - a);
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            if (show)
+            {
+                std::copy_n(blacks.view().at(x, y), 3, d);
+                d[3] = 1.0f;
+                return;
+            }
+            const float* sp = spread.view().at(x, y);
+            core::color::rgb dark = core::color::sat_scale({sp[0] * gain, sp[1] * gain, sp[2] * gain}, saturation);
+            if (atmosphere.amp != 0.0)
+            {
+                const float k = atmosphere.at(args.geometry.to_nx(x + 0.5), args.geometry.to_ny(y + 0.5));
+                std::ranges::for_each(dark, [&](float& c) { c = std::clamp(k * c, 0.0f, th * gain); });
+            }
+            const float* src = args.src.at(x, y);
+            std::array<float, 4> back{};
+            if (bg != nullptr && bg->bounds.contains(x, y))
+            {
+                const float* bp = bg->at(x, y);
+                back = {bp[0] * bg_brightness, bp[1] * bg_brightness, bp[2] * bg_brightness, bp[3]};
+            }
+            const float a = src[3] * source_opacity;
+            for (int k = 0; k < 3; ++k)
+            {
+                const float front = src[k] * source_opacity;
+                const float over = front + back[k] * (1.0f - a);
+                d[k] = over * (1.0f - dark[k]) + under * front * dark[k];
+            }
+            d[3] = a + back[3] * (1.0f - a);
         });
     }
 

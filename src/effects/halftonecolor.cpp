@@ -2,6 +2,7 @@
 #include "core/blur.hpp"
 #include "core/color.hpp"
 #include "core/edges.hpp"
+#include "core/halftone.hpp"
 #include "core/mask.hpp"
 #include "core/parallel.hpp"
 #include <algorithm>
@@ -71,13 +72,6 @@ namespace functional_fx_suite::effects::halftonecolor
         param::toggle(21, "invert_mask", "Invert Mask"),
     };
 
-    // |v| folded back and forth into 0..1
-    static double bounce(double v)
-    {
-        const double r = std::fmod(std::abs(v), 2.0);
-        return r > 1.0 ? 2.0 - r : r;
-    }
-
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
@@ -125,9 +119,7 @@ namespace functional_fx_suite::effects::halftonecolor
                     {
                         const double gx = nx - shift_x[c];
                         const double gy = ny - shift_y[c];
-                        constexpr double HALF_SQRT2 = 0.707;
-                        const auto grad = static_cast<float>(
-                            std::hypot(bounce(cos_t * gx - sin_t * gy), bounce(sin_t * gx + cos_t * gy)) * HALF_SQRT2);
+                        const float grad = core::halftone::dot(gx, gy, cos_t, sin_t);
                         const float tone = core::color::lerp(-1.0f, 1.0f / s1, in[c] - darken);
                         out[c] = std::clamp(((rgb_dots ? 1.0f - grad : grad) + tone) * s1, 0.0f, 1.0f);
                     }
@@ -139,12 +131,8 @@ namespace functional_fx_suite::effects::halftonecolor
             }
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

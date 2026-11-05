@@ -54,15 +54,9 @@ namespace functional_fx_suite::effects::edgecolorize
         const core::image& s = straight.view();
         core::buffer luma(s.bounds, 1);
         const core::image& l = luma.view();
-        core::parallel::for_range(s.bounds.y0, s.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = s.bounds.x0; x < s.bounds.x1; ++x)
-                {
-                    const float* c = s.at(x, y);
-                    *l.at(x, y) = core::color::luma(c[0], c[1], c[2]);
-                }
-            }
+        core::parallel::for_pixels(s.bounds, [&](int x, int y) {
+            const float* c = s.at(x, y);
+            *l.at(x, y) = core::color::luma(c[0], c[1], c[2]);
         });
         const double smooth = v.scalar(p::edge_smooth);
         core::edges::prepare(l, smooth, v.scalar(p::brightness) * (smooth + 0.1), args.geometry);
@@ -78,42 +72,32 @@ namespace functional_fx_suite::effects::edgecolorize
         const auto& left = v.vec(p::left);
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!args.src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const auto [ux, uy] = core::edges::gradient(l, x, y, 0);
-                    const float gx = cos_t * ux - sin_t * uy;
-                    const float gy = sin_t * ux + cos_t * uy;
-                    // brighter to the right lights a left-facing edge, brighter above a bottom-facing one
-                    const auto& horizontal = gx > 0.0f ? left : right;
-                    const auto& vertical = gy > 0.0f ? bottom : top;
-                    const float a = args.src.at(x, y)[3];
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        const auto b = static_cast<float>(bg[c]);
-                        const float out = b + (static_cast<float>(horizontal[c]) - b) * std::abs(gx) +
-                                          (static_cast<float>(vertical[c]) - b) * std::abs(gy);
-                        d[c] = out * a;
-                    }
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const auto [ux, uy] = core::edges::gradient(l, x, y, 0);
+            const float gx = cos_t * ux - sin_t * uy;
+            const float gy = sin_t * ux + cos_t * uy;
+            // brighter to the right lights a left-facing edge, brighter above a bottom-facing one
+            const auto& horizontal = gx > 0.0f ? left : right;
+            const auto& vertical = gy > 0.0f ? bottom : top;
+            const float a = args.src.at(x, y)[3];
+            for (int c = 0; c < 3; ++c)
+            {
+                const auto b = static_cast<float>(bg[c]);
+                const float out = b + (static_cast<float>(horizontal[c]) - b) * std::abs(gx) +
+                                  (static_cast<float>(vertical[c]) - b) * std::abs(gy);
+                d[c] = out * a;
+            }
+            d[3] = a;
         });
 
-        const auto mask_mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mask_mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

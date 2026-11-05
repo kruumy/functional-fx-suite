@@ -24,5 +24,11 @@ namespace functional_fx_suite::core
         // distinct non-zero frame offsets render reads through render_args::frame_at, given the current frame number
         // (render_args::frame_number); null when it reads none
         std::vector<int> (*frame_offsets)(const param_values&, int frame) = nullptr;
+
+        // frame_offsets, or none when the effect reads no other frames
+        [[nodiscard]] std::vector<int> offsets(const param_values& v, int frame) const
+        {
+            return frame_offsets != nullptr ? frame_offsets(v, frame) : std::vector<int>{};
+        }
     };
 } // namespace functional_fx_suite::core

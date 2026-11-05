@@ -2,9 +2,9 @@
 #include "core/param_values.hpp"
 #include "effects/catalog.hpp"
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cmath>
-#include <cstdio>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -39,14 +39,24 @@ namespace functional_fx_suite::tools::fxrender
   --fps <rate>       frame rate (default 24)
   --params           print the parameter table as markdown and exit
 Vectors take comma-separated values (center=0.1,0.2); choices take their index.
-Effects: f_shake f_tint f_rays f_glow f_ultraglow f_glowaura f_glowdark f_glowrings f_glint f_hotspots
-         f_edgerays f_vignette f_badcolors f_duotone f_tritone f_edgedetect f_edgecolorize f_flicker
-         f_mosaic f_scanlines f_halftone f_halftonecolor f_jpegdamage f_pixelsort f_digitaldamage
-         f_tvdamage f_filmdamage f_distort f_distortblur f_distortchroma f_distortrgb f_warpchroma
-         f_warpfisheye f_warppuddle f_zblur f_blurmocurves f_pseudocolor f_psykoblobs f_psykostripes
-         f_ascii f_rollingbar f_zdefocus f_lensflare f_timewarprgb f_timedisplace f_motiondetect
-         f_freezeframe f_jitterframes f_reverseedits
 )";
+
+    // the catalog's match names under an "Effects:" heading, wrapped to about 100 columns
+    static void print_effects(std::ostream& out)
+    {
+        std::string line = "Effects:";
+        for (const core::effect* fx : effects::catalog::all())
+        {
+            if (line.size() + 1 + fx->match_name.size() > 100)
+            {
+                out << line << '\n';
+                line = std::string(8, ' ');
+            }
+            line += ' ';
+            line += fx->match_name;
+        }
+        out << line << '\n';
+    }
 
     static double parse_number(std::string_view s)
     {
@@ -296,8 +306,7 @@ Effects: f_shake f_tint f_rays f_glow f_ultraglow f_glowaura f_glowdark f_glowri
         args.frame_duration = 1.0 / o.fps;
         const int frame = args.frame_number();
         const core::buffer src = o.in.empty() ? test_card(o.width, o.height, 0) : read_ppm(frame_path(o.in, frame));
-        const std::vector<int> offsets =
-            fx->frame_offsets != nullptr ? fx->frame_offsets(values, frame) : std::vector<int>{};
+        const std::vector<int> offsets = fx->offsets(values, frame);
         args.frame_at = [&](int offset) {
             if (std::ranges::find(offsets, offset) == offsets.end())
             {
@@ -329,6 +338,7 @@ int main(int argc, char** argv)
     catch (const std::exception& e)
     {
         std::cerr << "fxrender: " << e.what() << "\n\n" << functional_fx_suite::tools::fxrender::USAGE;
+        functional_fx_suite::tools::fxrender::print_effects(std::cerr);
         return 1;
     }
 }

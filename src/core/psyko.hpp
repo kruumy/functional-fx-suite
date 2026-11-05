@@ -26,6 +26,29 @@ namespace functional_fx_suite::core::psyko
         double source_scale;
     };
 
+    // the settings from the params f_psykoblobs and f_psykostripes both declare, `P` being the effect's param enum
+    template <class P> [[nodiscard]] settings read_settings(const render_args& args)
+    {
+        const param_values& v = *args.params;
+        const double ph = v.scalar(P::phase_start) + (v.scalar(P::phase_speed) * args.time);
+        const double fc = v.scalar(P::freq_colors);
+        const auto& color = v.vec(P::color);
+        const auto brightness = v.scalar(P::brightness);
+        return settings{
+            .freq = {fc * v.scalar(P::freq_red), fc * v.scalar(P::freq_green), fc * v.scalar(P::freq_blue)},
+            .phase = {ph + v.scalar(P::phase_red), ph + v.scalar(P::phase_green), ph + v.scalar(P::phase_blue)},
+            .tint = {static_cast<float>(brightness * color[0]), static_cast<float>(brightness * color[1]),
+                     static_cast<float>(brightness * color[2])},
+            .saturation = v.scalar_f(P::saturation),
+            .scale_by_source = v.scalar_f(P::scale_by_source),
+            .scale_by_src_amp = v.scalar_f(P::scale_by_src_amp),
+            .offset = v.scalar_f(P::offset),
+            .mix = v.scalar_f(P::mix_with_source),
+            .source_blur = v.scalar(P::source_blur),
+            .source_scale = v.scalar(P::source_scale),
+        };
+    }
+
     // `pattern(xy)` is the noise (Blobs) or the stripe ramp (Stripes):
     // pic = sat_scale(nsin(freq x (pattern + bw - phase)) x tint), times interp(1, min(1, bw x amp), scale_by_source),
     // plus offset, mixed with the source; bw is the source luma blurred by Source Blur, times Source Scale

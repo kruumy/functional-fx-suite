@@ -255,12 +255,6 @@ namespace functional_fx_suite::effects::tvdamage
 
     static constexpr double TAU = 2.0 * std::numbers::pi;
 
-    // a sine in turns mapped to 0..1
-    static double nsin(double x)
-    {
-        return 0.5 + 0.5 * std::sin(TAU * x);
-    }
-
     // floored, so the result takes the sign of m
     static double floored_mod(double a, double m)
     {
@@ -345,7 +339,7 @@ namespace functional_fx_suite::effects::tvdamage
     static std::vector<ghost> ghost_kernel(const core::param_values& v, double pos_amp, const core::frame& f)
     {
         std::vector<ghost> out;
-        const int n = std::clamp(static_cast<int>(std::lround(v.scalar(p::num_ghosts))), 0, 30);
+        const int n = std::max(0, v.whole(p::num_ghosts));
         const std::uint32_t seed = core::noise::seed_bits(v.scalar(p::seed) + 1.0);
         const double spacing = v.scalar(p::spacing);
         for (int k = 1; k <= n; ++k)
@@ -361,18 +355,6 @@ namespace functional_fx_suite::effects::tvdamage
         return out;
     }
 
-    static core::buffer clone(const core::image& img)
-    {
-        core::buffer out(img.bounds, img.channels);
-        for (int y = img.bounds.y0; y < img.bounds.y1; ++y)
-        {
-            std::copy_n(img.row(y) + static_cast<std::ptrdiff_t>(img.bounds.x0) * img.channels,
-                        static_cast<std::size_t>(img.bounds.width()) * img.channels,
-                        out.view().row(y) + static_cast<std::ptrdiff_t>(img.bounds.x0) * img.channels);
-        }
-        return out;
-    }
-
     static void render(const core::render_args& args)
     {
         const core::param_values& v = *args.params;
@@ -380,7 +362,7 @@ namespace functional_fx_suite::effects::tvdamage
         const core::image& src = args.src;
         const bool mono = v.choice(p::style) == 1;
         const double t = args.time;
-        const auto frame_number = static_cast<double>(std::lround(t / args.frame_duration));
+        const auto frame_number = static_cast<double>(args.frame_number());
         const double seed = v.scalar(p::seed);
         const double reception = v.scalar(p::reception_master);
         const double aspect = src.bounds.height() / f.width;
@@ -394,10 +376,10 @@ namespace functional_fx_suite::effects::tvdamage
         core::buffer d0 = core::edges::straight_rgb(src);
         if (const double b = 4.0 * v.scalar(p::orthicon); b != 0.0)
         {
-            const core::buffer hot = clone(d0.view());
+            const core::buffer hot = core::buffer::copy_of(d0.view());
             const double th = v.scalar(p::threshold);
             core::glow::hotspots(hot.view(), {th, th, th});
-            const core::buffer wide = clone(hot.view());
+            const core::buffer wide = core::buffer::copy_of(hot.view());
             const double darks = core::blur::amount_px(v.scalar(p::darks_width), f);
             core::blur::gaussian(wide.view(), darks, darks);
             constexpr double PROTECT_WIDTH = 0.1;
@@ -440,21 +422,15 @@ namespace functional_fx_suite::effects::tvdamage
             core::buffer echoes(src.bounds, 3);
             const core::image& e = echoes.view();
             const core::image& s = d0.view();
-            core::parallel::for_range(src.bounds.y0, src.bounds.y1, [&](int y_begin, int y_end) {
-                for (int y = y_begin; y < y_end; ++y)
+            core::parallel::for_pixels(src.bounds, [&](int x, int y) {
+                float* d = e.at(x, y);
+                for (const ghost& g : ghosts)
                 {
-                    for (int x = src.bounds.x0; x < src.bounds.x1; ++x)
+                    const core::sample::pixel q =
+                        core::sample::bilinear(s, x + 0.5 - g.offset_px, y + 0.5, core::sample::wrap::none);
+                    for (int c = 0; c < 3; ++c)
                     {
-                        float* d = e.at(x, y);
-                        for (const ghost& g : ghosts)
-                        {
-                            const core::sample::pixel q =
-                                core::sample::bilinear(s, x + 0.5 - g.offset_px, y + 0.5, core::sample::wrap::none);
-                            for (int c = 0; c < 3; ++c)
-                            {
-                                d[c] += g.amp * q[c];
-                            }
-                        }
+                        d[c] += g.amp * q[c];
                     }
                 }
             });
@@ -483,7 +459,7 @@ namespace functional_fx_suite::effects::tvdamage
             0.0, h_hold * (1.0 - h_vary) +
                      2.0 * h_hold * h_vary * core::noise::fbm_2d(core::noise::seed_bits(seed + 5.1), t * 10.0, 0.0, 1));
         const double h_freq = v.scalar(p::h_frequency);
-        const int h_octaves = std::clamp(static_cast<int>(std::lround(v.scalar(p::h_octaves))), 1, 10);
+        const int h_octaves = v.whole(p::h_octaves);
         const std::uint32_t h_seed = core::noise::seed_bits(seed + 5.0);
         const double h_roll = 0.2 * t;
 
@@ -569,7 +545,7 @@ namespace functional_fx_suite::effects::tvdamage
         // times wider than a gradient noise, so it is narrowed
         constexpr double STATIC_SPREAD = 0.35;
         const double static_amp = v.scalar(p::static_amplitude) * reception;
-        const double density = std::max(0.01, v.scalar(p::static_density));
+        const double density = v.scalar(p::static_density);
         const double static_threshold = 1.0 - std::sqrt(density);
         const double static_freq = pixel_frequency * 4.0;
         const double static_seed = seed + t + 3.0;
@@ -642,7 +618,7 @@ namespace functional_fx_suite::effects::tvdamage
                 const double bar =
                     (s1 - (center1 - edge1)) / (2.0 * edge1) * ((s2 + edge2) / (2.0 * edge2)) * (bars * 4.0 / 3.0) -
                     bars / 3.0;
-                const double lines = nsin(yy * scan_freq) * scanlines - (scanlines - 1.0) * 0.5;
+                const double lines = core::color::nsin(yy * scan_freq) * scanlines - (scanlines - 1.0) * 0.5;
                 const std::int64_t row = std::llround(std::floor(yy * ndots_y + dots_shift_y));
 
                 for (int x = src.bounds.x0; x < src.bounds.x1; ++x)
@@ -671,7 +647,8 @@ namespace functional_fx_suite::effects::tvdamage
                             core::noise::signed_unit(core::noise::combine(int_seed, static_cast<std::uint32_t>(row)));
                         const double uu = xx * ndots_x + dots_shift_x + jit;
                         const double vv = yy * ndots_y + dots_shift_y;
-                        const double dot = nsin(uu - std::floor(uu) - 0.25) * nsin(vv - std::floor(vv) - 0.25);
+                        const double dot = core::color::nsin(uu - std::floor(uu) - 0.25) *
+                                           core::color::nsin(vv - std::floor(vv) - 0.25);
                         const double phase = carrier * (std::floor(uu) + 0.5 * static_cast<double>(row));
                         add += interference * std::sin(TAU * (phase - std::floor(phase))) * dot;
                     }
@@ -699,7 +676,8 @@ namespace functional_fx_suite::effects::tvdamage
                     for (int ch = 0; ch < 3; ++ch)
                     {
                         const double shift = roll + (mono ? 0.0 : ch / 3.0);
-                        const double cl = nsin(ry * color_frequency - shift) * stripes - (stripes - 1.0) * 0.5;
+                        const double cl =
+                            core::color::nsin(ry * color_frequency - shift) * stripes - (stripes - 1.0) * 0.5;
                         const double i2 = c[ch] * 2.0;
                         rgb[ch] = core::color::dissolve(static_cast<float>(std::max(0.0, i2 - 1.0)),
                                                         static_cast<float>(std::min(1.0, i2)), static_cast<float>(cl));
@@ -761,46 +739,36 @@ namespace functional_fx_suite::effects::tvdamage
 
         const double fish_eye = v.scalar(p::fish_eye);
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const float a = src.at(x, y)[3];
-                    std::array<float, 3> c{};
-                    if (fish_eye != 0.0)
-                    {
-                        const double xx = to_xx(x + 0.5);
-                        const double yy = to_yy(y + 0.5);
-                        const double m = xx * xx + yy * yy;
-                        const double k = (1.0 + m * fish_eye) / (1.0 + std::max(0.0, fish_eye));
-                        const core::sample::pixel q = core::sample::bilinear(
-                            out, f.to_px_x(xx * k / core::XY_PER_FRAME_UNIT),
-                            f.to_px_y(yy * k / core::XY_PER_FRAME_UNIT), core::sample::wrap::none);
-                        std::copy_n(q.begin(), 3, c.begin());
-                    }
-                    else
-                    {
-                        std::copy_n(out.at(x, y), 3, c.begin());
-                    }
-                    std::ranges::transform(c, d, [a](float value) { return value * a; });
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const float a = src.at(x, y)[3];
+            std::array<float, 3> c{};
+            if (fish_eye != 0.0)
+            {
+                const double xx = to_xx(x + 0.5);
+                const double yy = to_yy(y + 0.5);
+                const double m = xx * xx + yy * yy;
+                const double k = (1.0 + m * fish_eye) / (1.0 + std::max(0.0, fish_eye));
+                const core::sample::pixel q =
+                    core::sample::bilinear(out, f.to_px_x(xx * k / core::XY_PER_FRAME_UNIT),
+                                           f.to_px_y(yy * k / core::XY_PER_FRAME_UNIT), core::sample::wrap::none);
+                std::copy_n(q.begin(), 3, c.begin());
+            }
+            else
+            {
+                std::copy_n(out.at(x, y), 3, c.begin());
+            }
+            std::ranges::transform(c, d, [a](float value) { return value * a; });
+            d[3] = a;
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

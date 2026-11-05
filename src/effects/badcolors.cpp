@@ -62,47 +62,39 @@ namespace functional_fx_suite::effects::badcolors
         const bool invert = v.toggle(p::invert_matte);
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!args.src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const float* s = args.src.at(x, y);
-                    const float a = s[3];
-                    const float inv = a > 0.0f ? 1.0f / a : 0.0f;
-                    const std::array<float, 3> rgb{s[0] * inv, s[1] * inv, s[2] * inv};
-                    const float luma = core::color::luma(rgb[0], rgb[1], rgb[2]);
-                    const float chroma = std::ranges::max(rgb) - std::ranges::min(rgb);
-                    // a pixel above any upper limit is high; otherwise below any lower limit is low
-                    bool high = luma > max_luma || chroma > max_chroma;
-                    bool low = min_luma > luma || min_chroma > chroma;
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        high = high || rgb[c] > hi[c];
-                        low = low || lo[c] > rgb[c];
-                    }
-                    low = low && !high;
-                    const bool flagged = high || low;
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        float out = flagged != invert ? 1.0f : 0.0f;
-                        if (!output_matte)
-                        {
-                            out = high  ? static_cast<float>(high_color[c])
-                                  : low ? static_cast<float>(low_color[c])
-                                        : rgb[c];
-                        }
-                        d[c] = out * a;
-                    }
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const float* s = args.src.at(x, y);
+            const float a = s[3];
+            const float inv = a > 0.0f ? 1.0f / a : 0.0f;
+            const std::array<float, 3> rgb{s[0] * inv, s[1] * inv, s[2] * inv};
+            const float luma = core::color::luma(rgb[0], rgb[1], rgb[2]);
+            const float chroma = std::ranges::max(rgb) - std::ranges::min(rgb);
+            // a pixel above any upper limit is high; otherwise below any lower limit is low
+            bool high = luma > max_luma || chroma > max_chroma;
+            bool low = min_luma > luma || min_chroma > chroma;
+            for (int c = 0; c < 3; ++c)
+            {
+                high = high || rgb[c] > hi[c];
+                low = low || lo[c] > rgb[c];
+            }
+            low = low && !high;
+            const bool flagged = high || low;
+            for (int c = 0; c < 3; ++c)
+            {
+                float out = flagged != invert ? 1.0f : 0.0f;
+                if (!output_matte)
+                {
+                    out = high ? static_cast<float>(high_color[c]) : low ? static_cast<float>(low_color[c]) : rgb[c];
+                }
+                d[c] = out * a;
+            }
+            d[3] = a;
         });
     }
 

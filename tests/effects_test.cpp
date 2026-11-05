@@ -5,14 +5,15 @@
 #include "core/fft.hpp"
 #include "core/flare.hpp"
 #include "core/param_values.hpp"
+#include "core/sample.hpp"
 #include "core/warp.hpp"
 #include "effects/catalog.hpp"
+#include "test_support.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
 #include <format>
-#include <iostream>
 #include <numbers>
 #include <numeric>
 #include <set>
@@ -23,17 +24,6 @@
 
 namespace functional_fx_suite::tests::effects_test
 {
-    static int failures = 0;
-
-    static void check(bool ok, std::string_view what)
-    {
-        if (!ok)
-        {
-            ++failures;
-            std::cerr << "FAIL: " << what << '\n';
-        }
-    }
-
     static core::buffer card(int w, int h)
     {
         core::buffer b(core::rect{0, 0, w, h}, 4);
@@ -94,17 +84,16 @@ namespace functional_fx_suite::tests::effects_test
             const auto it = std::ranges::find(frames, offset, &offset_frame::offset);
             if (it != frames.end())
             {
-                const core::image& f = it->src;
-                b.reset(f.bounds, 4);
-                std::copy_n(f.data, static_cast<std::size_t>(f.bounds.width()) * f.bounds.height() * 4, b.view().data);
+                b = core::buffer::copy_of(it->src);
             }
             return b;
         };
         args.params = &values;
-        args.geometry =
-            core::frame{src.bounds.width() * 0.5, src.bounds.height() * 0.5, static_cast<double>(src.bounds.width())};
+        args.geometry = centered_frame(src.bounds.width(), src.bounds.height());
         args.time = time;
         fx.render(args);
+        check(std::set<int>(fetched.begin(), fetched.end()).size() == fetched.size(),
+              std::format("{} fetches each frame offset at most once", name));
         for (int y = src.bounds.y0; y < src.bounds.y1; ++y)
         {
             for (int x = src.bounds.x0; x < src.bounds.x1; ++x)
@@ -122,8 +111,10 @@ namespace functional_fx_suite::tests::effects_test
 
     static void set(const core::effect& fx, core::param_values& v, std::string_view name, double value)
     {
-        const auto it = std::ranges::find(fx.params, name, &core::param::name);
-        v.set(static_cast<std::size_t>(it - fx.params.begin()), {value, value, value});
+        const auto i =
+            static_cast<std::size_t>(std::ranges::find(fx.params, name, &core::param::name) - fx.params.begin());
+        v.set(i, {value, value, value});
+        check(v.get(i)[0] == value, std::format("{}: test sets {} outside its range", fx.name, name));
     }
 
     static void param_tables()
@@ -586,6 +577,59 @@ namespace functional_fx_suite::tests::effects_test
         }
     }
 
+    // an image whose bounds don't start at 0 (an OFX source offset upstream) renders the same, just moved
+    static void offset_bounds()
+    {
+        const core::buffer base = card(64, 48);
+        constexpr int DX = -9;
+        constexpr int DY = -5;
+        core::buffer moved(core::rect{DX, DY, 64 + DX, 48 + DY}, 4);
+        for (int y = 0; y < 48; ++y)
+        {
+            for (int x = 0; x < 64; ++x)
+            {
+                std::copy_n(base.view().at(x, y), 4, moved.view().at(x + DX, y + DY));
+            }
+        }
+        for (const char* name : {"f_mosaic", "f_pixelsort"})
+        {
+            const core::effect& fx = *effects::catalog::find(name);
+            const core::param_values values(fx.params);
+            const auto render = [&](const core::image& src, double cx, double cy) {
+                core::buffer out(src.bounds, 4);
+                core::render_args args;
+                args.src = src;
+                args.dst = out.view();
+                args.params = &values;
+                args.geometry = core::frame{cx, cy, 64.0};
+                fx.render(args);
+                return out;
+            };
+            const core::buffer a = render(base.view(), 32.0, 24.0);
+            const core::buffer b = render(moved.view(), 32.0 + DX, 24.0 + DY);
+            bool same = true;
+            for (int y = 0; y < 48 && same; ++y)
+            {
+                for (int x = 0; x < 64 && same; ++x)
+                {
+                    same = std::equal(a.view().at(x, y), a.view().at(x, y) + 4, b.view().at(x + DX, y + DY));
+                }
+            }
+            check(same, std::format("{} renders an offset source the same, moved", name));
+        }
+    }
+
+    static void samples()
+    {
+        const core::buffer img = solid(core::rect{2, 3, 6, 7}, 0.5f);
+        const core::image& v = img.view();
+        check(core::sample::nearest(v, 2.0, 3.0) == v.at(2, 3) && core::sample::nearest(v, 5.99, 6.99) == v.at(5, 6),
+              "sample::nearest finds the pixel holding a position");
+        check(core::sample::nearest(v, 6.0, 3.0) == nullptr && core::sample::nearest(v, 1.99, 3.0) == nullptr,
+              "sample::nearest is null past each edge");
+        check(core::sample::nearest(v, 1e30, -1e30) == nullptr, "sample::nearest is null for far positions");
+    }
+
     static void warps()
     {
         const core::buffer src = card(64, 48);
@@ -931,6 +975,18 @@ namespace functional_fx_suite::tests::effects_test
         check(hidden.sum_diff < 1e-3 && std::abs(shown.sum_diff - full.sum_diff) < 1e-3,
               "f_lensflare occlusion hides the flare behind the mask");
 
+        // full softness reaches 20 px around hotspot column 44, so a 1 px occluder at column 46 dims the flare
+        const auto soft = [](const core::effect& f, core::param_values& v) { set(f, v, "occlusion_softness", 1.0); };
+        const core::buffer clear = solid(core::rect{0, 0, 160, 90}, 0.0f);
+        core::buffer wire = solid(core::rect{0, 0, 160, 90}, 0.0f);
+        for (int y = 0; y < 90; ++y)
+        {
+            std::fill_n(wire.view().at(46, y), 4, 1.0f);
+        }
+        check(run("f_lensflare", black.view(), soft, 0.5, &wire.view()).sum_diff <
+                  run("f_lensflare", black.view(), soft, 0.5, &clear.view()).sum_diff,
+              "f_lensflare occlusion softness counts a thin occluder near the hotspot");
+
         const auto flickering = [](const core::effect& f, core::param_values& v) { set(f, v, "flicker_amp", 1.0); };
         check(run("f_lensflare", black.view(), flickering, 0.2).sum_diff !=
                   run("f_lensflare", black.view(), flickering, 1.7).sum_diff,
@@ -1189,6 +1245,8 @@ int main()
     functional_fx_suite::tests::effects_test::damage();
     functional_fx_suite::tests::effects_test::masks();
     functional_fx_suite::tests::effects_test::background();
+    functional_fx_suite::tests::effects_test::samples();
+    functional_fx_suite::tests::effects_test::offset_bounds();
     functional_fx_suite::tests::effects_test::warps();
     functional_fx_suite::tests::effects_test::generators();
     functional_fx_suite::tests::effects_test::flares();
@@ -1196,7 +1254,5 @@ int main()
     functional_fx_suite::tests::effects_test::time_displaces();
     functional_fx_suite::tests::effects_test::motion_detects();
     functional_fx_suite::tests::effects_test::retimes();
-    const int failures = functional_fx_suite::tests::effects_test::failures;
-    std::cout << (failures == 0 ? "all tests passed\n" : std::format("{} test(s) failed\n", failures));
-    return failures == 0 ? 0 : 1;
+    return functional_fx_suite::tests::finish("");
 }

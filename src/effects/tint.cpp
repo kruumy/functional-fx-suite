@@ -52,38 +52,27 @@ namespace functional_fx_suite::effects::tint
         }
 
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!args.src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!args.src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const float* s = args.src.at(x, y);
-                    const float a = s[3];
-                    // the math works on straight color, so unpremultiply around it
-                    const float inv = a > 0.0f ? 1.0f / a : 0.0f;
-                    const core::color::rgb saturated =
-                        core::color::sat_scale({s[0] * inv, s[1] * inv, s[2] * inv}, saturation);
-                    for (int c = 0; c < 3; ++c)
-                    {
-                        d[c] = (saturated[c] * scale[c] + offset[c]) * a;
-                    }
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const float* s = args.src.at(x, y);
+            const float a = s[3];
+            // the math works on straight color, so unpremultiply around it
+            const float inv = a > 0.0f ? 1.0f / a : 0.0f;
+            const core::color::rgb saturated = core::color::sat_scale({s[0] * inv, s[1] * inv, s[2] * inv}, saturation);
+            for (int c = 0; c < 3; ++c)
+            {
+                d[c] = (saturated[c] * scale[c] + offset[c]) * a;
+            }
+            d[3] = a;
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

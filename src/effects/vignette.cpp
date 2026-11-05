@@ -114,7 +114,7 @@ namespace functional_fx_suite::effects::vignette
         const auto& color = v.vec(p::color);
         const float opacity = v.scalar_f(p::opacity);
         const float brightness = v.scalar_f(p::source_brightness);
-        const int mode = std::clamp(v.choice(p::combine), 0, 6);
+        const int mode = v.choice(p::combine);
         const bool blur_inside = v.toggle(p::blur_inside);
 
         // Blur Amount scaled by the vignette, approximated by blending fixed blur steps
@@ -125,10 +125,7 @@ namespace functional_fx_suite::effects::vignette
         {
             for (int k = 1; k <= BLUR_STEPS; ++k)
             {
-                core::buffer& b = steps.emplace_back(straight.view().bounds, 3);
-                std::copy_n(straight.view().data,
-                            static_cast<std::size_t>(b.view().bounds.width()) * b.view().bounds.height() * 3,
-                            b.view().data);
+                core::buffer& b = steps.emplace_back(core::buffer::copy_of(straight.view()));
                 const double a = amount * k / BLUR_STEPS;
                 core::blur::gaussian(b.view(), a, a);
             }

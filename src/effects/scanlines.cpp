@@ -87,7 +87,7 @@ namespace functional_fx_suite::effects::scanlines
         // the noise is reseeded every frame
         const float add_noise = v.scalar_f(p::add_noise);
         const double noise_freq = freq * v.scalar(p::noise_freq_rel);
-        const auto frame_number = static_cast<double>(std::lround(args.time / args.frame_duration));
+        const auto frame_number = static_cast<double>(args.frame_number());
         std::array<std::uint32_t, 3> seeds{};
         for (int c = 0; c < 3; ++c)
         {
@@ -123,8 +123,7 @@ namespace functional_fx_suite::effects::scanlines
                         const float i2 =
                             2.0f * (core::color::gamma(c_in[c] * brightness * static_cast<float>(scale[c]), power) +
                                     noise + offset);
-                        const auto wave =
-                            static_cast<float>(0.5 + 0.5 * std::sin(2.0 * std::numbers::pi * (across + shift[c])));
+                        const auto wave = static_cast<float>(core::color::nsin(across + shift[c]));
                         const float lines = wave * sharpness - (sharpness - 1.0f) * 0.5f;
                         out[c] = core::color::dissolve(std::max(0.0f, i2 - 1.0f), std::min(1.0f, i2), lines);
                     }
@@ -136,12 +135,8 @@ namespace functional_fx_suite::effects::scanlines
             }
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

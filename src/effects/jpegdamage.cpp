@@ -167,7 +167,7 @@ namespace functional_fx_suite::effects::jpegdamage
     {
         settings s;
         // IJG quality scaling: 50 keeps the tables, lower coarsens, higher refines
-        const double q = std::clamp(v.scalar(p::quality) * 100.0, 1.0, 100.0);
+        const double q = v.scalar(p::quality) * 100.0;
         const double table_scale = (q < 50.0 ? 5000.0 / q : 200.0 - 2.0 * q) / 100.0;
         const double all = v.scalar(p::all_freq_scale);
         const std::array bands{v.scalar(p::low_freq_scale), v.scalar(p::mid_freq_scale), v.scalar(p::high_freq_scale)};
@@ -197,9 +197,9 @@ namespace functional_fx_suite::effects::jpegdamage
         s.coherence = v.scalar(p::error_coherence);
         // the errors hold for Jitter Frames frames, then jump
         double seed = v.scalar(p::rand_seed);
-        if (const auto jitter = static_cast<double>(std::lround(v.scalar(p::jitter_frames))); jitter > 0.0)
+        if (const auto jitter = static_cast<double>(v.whole(p::jitter_frames)); jitter > 0.0)
         {
-            const auto frame_number = static_cast<double>(std::lround(args.time / args.frame_duration));
+            const auto frame_number = static_cast<double>(args.frame_number());
             seed += std::floor(frame_number / jitter) * jitter;
         }
         s.seed = core::noise::seed_bits(seed);
@@ -253,8 +253,8 @@ namespace functional_fx_suite::effects::jpegdamage
         const core::image& src = args.src;
 
         // the image is coded on a grid of Res Factor sized cells, aligned to the source's top-left
-        const double cell_y = std::max(1.0, std::round(v.scalar(p::res_factor)));
-        const double cell_x = std::max(0.01, cell_y * v.scalar(p::res_rel_x));
+        const double cell_y = std::round(v.scalar(p::res_factor));
+        const double cell_x = cell_y * v.scalar(p::res_rel_x);
         const int gw = static_cast<int>(std::ceil(src.bounds.width() / cell_x));
         const int gh = static_cast<int>(std::ceil(src.bounds.height() / cell_y));
         const int bw = (gw + N - 1) / N;
@@ -356,38 +356,28 @@ namespace functional_fx_suite::effects::jpegdamage
         const float darks = v.scalar_f(p::offset_darks);
         const float gain = (lights < 0.0f ? -1.0f : 1.0f) * std::max(0.0f, std::abs(lights) - darks);
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!src.bounds.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
-                {
-                    float* d = dst.at(x, y);
-                    if (!src.bounds.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const int gx = std::min(gw - 1, static_cast<int>((x - src.bounds.x0) / cell_x));
-                    const int gy = std::min(gh - 1, static_cast<int>((y - src.bounds.y0) / cell_y));
-                    const float* ycc = g.at(gx, gy);
-                    constexpr float INV_255 = 1.0f / 255.0f;
-                    const core::color::rgb rgb{(ycc[0] + 1.402f * ycc[2]) * INV_255,
-                                               (ycc[0] - 0.344136f * ycc[1] - 0.714136f * ycc[2]) * INV_255,
-                                               (ycc[0] + 1.772f * ycc[1]) * INV_255};
-                    const core::color::rgb out = core::color::sat_scale(rgb, saturation);
-                    const float a = src.at(x, y)[3];
-                    std::ranges::transform(out, d, [&](float c) { return (c * gain + darks) * a; });
-                    d[3] = a;
-                }
+                std::fill_n(d, 4, 0.0f);
+                return;
             }
+            const int gx = std::min(gw - 1, static_cast<int>((x - src.bounds.x0) / cell_x));
+            const int gy = std::min(gh - 1, static_cast<int>((y - src.bounds.y0) / cell_y));
+            const float* ycc = g.at(gx, gy);
+            constexpr float INV_255 = 1.0f / 255.0f;
+            const core::color::rgb rgb{(ycc[0] + 1.402f * ycc[2]) * INV_255,
+                                       (ycc[0] - 0.344136f * ycc[1] - 0.714136f * ycc[2]) * INV_255,
+                                       (ycc[0] + 1.772f * ycc[1]) * INV_255};
+            const core::color::rgb out = core::color::sat_scale(rgb, saturation);
+            const float a = src.at(x, y)[3];
+            std::ranges::transform(out, d, [&](float c) { return (c * gain + darks) * a; });
+            d[3] = a;
         });
 
-        const auto mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

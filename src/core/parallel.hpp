@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/rect.hpp"
 #include <algorithm>
 #include <concepts>
 #include <future>
@@ -43,5 +44,19 @@ namespace functional_fx_suite::core::parallel
         // get() rethrows worker exceptions; wait first so no worker outlives this frame
         std::ranges::for_each(pending, [](std::future<void>& f) { f.wait(); });
         std::ranges::for_each(pending, [](std::future<void>& f) { f.get(); });
+    }
+
+    // runs fn(x, y) over every pixel of `area`, rows in parallel
+    template <std::invocable<int, int> Fn> void for_pixels(const rect& area, Fn&& fn)
+    {
+        for_range(area.y0, area.y1, [&](int y_begin, int y_end) {
+            for (int y = y_begin; y < y_end; ++y)
+            {
+                for (int x = area.x0; x < area.x1; ++x)
+                {
+                    fn(x, y);
+                }
+            }
+        });
     }
 } // namespace functional_fx_suite::core::parallel

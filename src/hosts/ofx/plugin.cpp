@@ -341,7 +341,7 @@ namespace functional_fx_suite::hosts::ofx::plugin
             }
             int choice = 0;
             check(suites.params->paramGetValue(param_handle(set, fx.params[prm.enable_param].name), &choice));
-            const bool enabled = choice >= 0 && choice < 32 && ((prm.enable_mask >> choice) & 1U) != 0;
+            const bool enabled = prm.enabled_for(choice);
             OfxPropertySetHandle props = nullptr;
             param_handle(set, prm.name, &props);
             property_set(props).set(kOfxParamPropEnabled, enabled ? 1 : 0);
@@ -490,8 +490,7 @@ namespace functional_fx_suite::hosts::ofx::plugin
         const source_geometry g(clip_handle(effect, SOURCE_CLIP), time, 1.0, 1.0);
         core::render_args timing;
         set_time(timing, effect, time);
-        std::vector<int> offsets =
-            fx.frame_offsets(read_params(effect, time, g.f, 1.0, 1.0, g.par), timing.frame_number());
+        std::vector<int> offsets = fx.offsets(read_params(effect, time, g.f, 1.0, 1.0, g.par), timing.frame_number());
         offsets.push_back(0);
         std::ranges::sort(offsets);
         const std::string prop = std::string("OfxImageClipPropFrameRange_") + SOURCE_CLIP;
@@ -556,8 +555,7 @@ namespace functional_fx_suite::hosts::ofx::plugin
 
         core::render_args args;
         set_time(args, effect, time);
-        const std::vector<int> offsets =
-            fx.frame_offsets != nullptr ? fx.frame_offsets(values, args.frame_number()) : std::vector<int>{};
+        const std::vector<int> offsets = fx.offsets(values, args.frame_number());
         args.frame_at = [&](int offset) {
             core::buffer b;
             if (std::ranges::find(offsets, offset) != offsets.end())
@@ -572,8 +570,8 @@ namespace functional_fx_suite::hosts::ofx::plugin
         };
         args.src = src.view();
         args.dst = dst.view();
-        args.mask = mask.view().data != nullptr ? &mask.view() : nullptr;
-        args.background = background.view().data != nullptr ? &background.view() : nullptr;
+        args.mask = mask.view_if_set();
+        args.background = background.view_if_set();
         args.params = &values;
         args.geometry = f;
         args.params_at = [&](double seconds) {

@@ -76,7 +76,7 @@ namespace functional_fx_suite::core::noise
         return a + (b - a) * uz;
     }
 
-    // fractal sum of 2D value noise, amplitude halving per finer octave, [0, 1]
+    // fractal sum of 2D value noise over octaves >= 1, amplitude halving per finer octave, [0, 1]
     [[nodiscard]] inline double fbm_2d(std::uint32_t seed, double x, double y, int octaves)
     {
         double sum = 0.0;
@@ -90,7 +90,7 @@ namespace functional_fx_suite::core::noise
             x *= 2.0;
             y *= 2.0;
         }
-        return norm > 0.0 ? sum / norm : 0.5;
+        return sum / norm;
     }
 
     // fractal sum of 3D value noise; gain scales each finer octave, result [0, 1]

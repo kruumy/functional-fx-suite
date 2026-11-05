@@ -392,7 +392,7 @@ namespace functional_fx_suite::effects::shake
         const motion base = read_motion(v);
         const bool blur = v.toggle(p::motion_blur);
         const double blur_length = v.scalar(p::mo_blur_length);
-        const auto mode = static_cast<core::sample::wrap>(std::clamp(v.choice(p::wrap), 0, 2));
+        const auto mode = static_cast<core::sample::wrap>(v.choice(p::wrap));
 
         const std::array<double, 3> channel_amp{v.scalar(p::red_amplitude), v.scalar(p::green_amplitude),
                                                 v.scalar(p::blue_amplitude)};
@@ -447,12 +447,8 @@ namespace functional_fx_suite::effects::shake
             }
         });
 
-        const auto mask_mode = v.choice(p::mask_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
-        const core::buffer m = core::mask::build(args, mask_mode, v.scalar(p::blur_mask), v.toggle(p::invert_mask));
-        if (m.view().data != nullptr)
-        {
-            core::mask::dissolve(args, m.view());
-        }
+        core::mask::apply(args, core::mask::luma_or_alpha(v.choice(p::mask_use)), v.scalar(p::blur_mask),
+                          v.toggle(p::invert_mask));
     }
 
     const core::effect& get()

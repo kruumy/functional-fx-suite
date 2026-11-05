@@ -46,6 +46,16 @@ namespace functional_fx_suite::core::sample
         return true;
     }
 
+    // the pixel holding finite (x, y), or null outside; bounds checked in double so far points can't overflow the cast
+    [[nodiscard]] inline float* nearest(const image& img, double x, double y)
+    {
+        const double fx = std::floor(x);
+        const double fy = std::floor(y);
+        const rect& b = img.bounds;
+        return fx >= b.x0 && fx < b.x1 && fy >= b.y0 && fy < b.y1 ? img.at(static_cast<int>(fx), static_cast<int>(fy))
+                                                                  : nullptr;
+    }
+
     // bilinear sample at continuous pixel position (pixel i spans [i, i + 1))
     [[nodiscard]] inline pixel bilinear(const image& img, double x, double y, wrap mode)
     {

@@ -4,6 +4,7 @@
 #include "core/mask.hpp"
 #include "core/noise.hpp"
 #include "core/parallel.hpp"
+#include "core/sample.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -184,7 +185,7 @@ namespace functional_fx_suite::effects::pixelsort
         placement out;
         out.line.assign(static_cast<std::size_t>(w) * h, -1);
         out.along.assign(out.line.size(), 0.0f);
-        const auto mode = static_cast<style>(std::clamp(v.choice(p::style), 0, 2));
+        const auto mode = static_cast<style>(v.choice(p::style));
         const std::uint32_t seed = core::noise::seed_bits(v.scalar(p::seed));
 
         if (mode == style::linear)
@@ -322,28 +323,21 @@ namespace functional_fx_suite::effects::pixelsort
                     {
                         continue;
                     }
-                    const auto px = static_cast<int>(std::floor(f.to_px_x(fx / scale)));
-                    const auto py = static_cast<int>(std::floor(f.to_px_y(fy / scale)));
-                    if (b.contains(px, py))
+                    if (float* d = core::sample::nearest(dots.view(), f.to_px_x(fx / scale), f.to_px_y(fy / scale));
+                        d != nullptr)
                     {
-                        *dots.view().at(px, py) = 1.0f;
+                        *d = 1.0f;
                     }
                 }
             }
         }
 
-        const auto mode = v.choice(p::matte_use) == 1 ? core::mask::source::alpha : core::mask::source::luma;
+        const auto mode = core::mask::luma_or_alpha(v.choice(p::matte_use));
         const core::buffer matte = core::mask::build(args, mode, v.scalar(p::blur_matte), v.toggle(p::invert_matte));
         core::buffer combined(b, 1);
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                for (int x = b.x0; x < b.x1; ++x)
-                {
-                    const float m = matte.view().data != nullptr ? *matte.view().at(x, y) : 1.0f;
-                    *combined.view().at(x, y) = m * *soft.view().at(x, y) * (1.0f - *dots.view().at(x, y));
-                }
-            }
+        core::parallel::for_pixels(b, [&](int x, int y) {
+            const float m = matte.view().data != nullptr ? *matte.view().at(x, y) : 1.0f;
+            *combined.view().at(x, y) = m * *soft.view().at(x, y) * (1.0f - *dots.view().at(x, y));
         });
 
         // sort each run of included pixels along its line by value; the soft mask then blends it in
@@ -369,14 +363,8 @@ namespace functional_fx_suite::effects::pixelsort
             }
         }
         const bool reverse = v.toggle(p::reverse_sort_direction);
-        core::buffer sorted(b, 4);
+        const core::buffer sorted = core::buffer::copy_of(src);
         const core::image& out = sorted.view();
-        core::parallel::for_range(b.y0, b.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
-            {
-                std::copy_n(src.row(y), static_cast<std::size_t>(w) * 4, out.row(y));
-            }
-        });
         const auto pixel = [&](int i) { return std::array{b.x0 + i % w, b.y0 + i / w}; };
         // low-noise pixels take the extreme sort value, which splits the sorted runs into chunks
         const auto key = [&](int i) {
@@ -424,42 +412,36 @@ namespace functional_fx_suite::effects::pixelsort
             }
         });
 
-        const auto what = static_cast<show>(std::clamp(v.choice(p::show), 0, 4));
+        const auto what = static_cast<show>(v.choice(p::show));
         const float mix = v.scalar_f(p::mix_with_source);
         const core::image& dst = args.dst;
-        core::parallel::for_range(dst.bounds.y0, dst.bounds.y1, [&](int y_begin, int y_end) {
-            for (int y = y_begin; y < y_end; ++y)
+        core::parallel::for_pixels(dst.bounds, [&](int x, int y) {
+            float* d = dst.at(x, y);
+            if (!b.contains(x, y))
             {
-                for (int x = dst.bounds.x0; x < dst.bounds.x1; ++x)
+                std::fill_n(d, 4, 0.0f);
+                return;
+            }
+            const float* s = src.at(x, y);
+            std::array<float, 4> result{};
+            const float k = std::clamp(*combined.view().at(x, y), 0.0f, 1.0f);
+            const std::array<const core::buffer*, 4> views{&values, &soft, &dots, &combined};
+            if (what == show::result)
+            {
+                const float* r = out.at(x, y);
+                for (int c = 0; c < 4; ++c)
                 {
-                    float* d = dst.at(x, y);
-                    if (!b.contains(x, y))
-                    {
-                        std::fill_n(d, 4, 0.0f);
-                        continue;
-                    }
-                    const float* s = src.at(x, y);
-                    std::array<float, 4> result{};
-                    const float k = std::clamp(*combined.view().at(x, y), 0.0f, 1.0f);
-                    const std::array<const core::buffer*, 4> views{&values, &soft, &dots, &combined};
-                    if (what == show::result)
-                    {
-                        const float* r = out.at(x, y);
-                        for (int c = 0; c < 4; ++c)
-                        {
-                            result[c] = core::color::lerp(s[c], r[c], k);
-                        }
-                    }
-                    else
-                    {
-                        const float g = *views[static_cast<std::size_t>(what) - 1]->view().at(x, y);
-                        result = {g, g, g, 1.0f};
-                    }
-                    for (int c = 0; c < 4; ++c)
-                    {
-                        d[c] = core::color::lerp(result[c], s[c], mix);
-                    }
+                    result[c] = core::color::lerp(s[c], r[c], k);
                 }
+            }
+            else
+            {
+                const float g = *views[static_cast<std::size_t>(what) - 1]->view().at(x, y);
+                result = {g, g, g, 1.0f};
+            }
+            for (int c = 0; c < 4; ++c)
+            {
+                d[c] = core::color::lerp(result[c], s[c], mix);
             }
         });
     }

@@ -137,23 +137,13 @@ namespace functional_fx_suite::effects::rays
     {
         settings s;
         s.dark = v.choice(p::style) == 1;
-        s.path.cx = v.vec(p::center)[0];
-        s.path.cy = v.vec(p::center)[1];
-        s.path.lengths = core::rays::channel_lengths(
-            v.scalar(p::rays_length), {v.scalar(p::length_red), v.scalar(p::length_green), v.scalar(p::length_blue)},
-            s.dark);
-        s.path.shape = core::rays::ray_shape{v.scalar(p::reverse_rays), v.scalar(p::bias_outer_bright),
-                                             v.scalar(s.dark ? p::rays_darkness : p::rays_brightness)};
-        s.path.res_level = std::clamp(v.choice(p::rays_res), 0, 2);
+        s.path = core::rays::read_path<p>(v, s.dark, v.scalar(s.dark ? p::rays_darkness : p::rays_brightness));
         for (int c = 0; c < 3; ++c)
         {
             const double t = v.scalar(p::threshold) + v.vec(p::threshold_add_color)[c];
             s.threshold[c] = s.dark ? 1.0 - t : t;
         }
-        s.shimmer = core::rays::shimmer{v.scalar(p::shimmer_amp), v.scalar(p::shimmer_freq),
-                                        core::noise::seed_bits(v.scalar(p::shimmer_seed)),
-                                        v.scalar(p::shimmer_shift_x) + time * v.scalar(p::shimmer_speed_x),
-                                        v.scalar(p::shimmer_shift_y) + time * v.scalar(p::shimmer_speed_y)};
+        s.shimmer = core::rays::read_shimmer<p>(v, time);
         s.from_alpha = v.scalar(p::rays_from_alpha);
         s.source_chroma = v.scalar(p::use_source_chroma);
         return s;
@@ -267,11 +257,9 @@ namespace functional_fx_suite::effects::rays
         const core::param_values& v = *args.params;
         const settings s = read_settings(v, args.time);
 
-        static constexpr std::array MATTE_SOURCES{core::mask::source::luma, core::mask::source::color,
-                                                  core::mask::source::alpha};
-        const core::buffer matte = core::mask::build(args, MATTE_SOURCES[std::clamp(v.choice(p::matte_type), 0, 2)],
+        const core::buffer matte = core::mask::build(args, core::mask::luma_color_alpha(v.choice(p::matte_type)),
                                                      v.scalar(p::blur_matte), v.toggle(p::invert_matte));
-        const core::image* matte_view = matte.view().data != nullptr ? &matte.view() : nullptr;
+        const core::image* matte_view = matte.view_if_set();
 
         const core::buffer gen = generator(args, s, matte_view);
         const core::buffer grid = core::rays::streak(args, s.path, gen.view());
