@@ -6,13 +6,16 @@
 #include "core/flare.hpp"
 #include "core/glow.hpp"
 #include "core/mask.hpp"
+#include "core/mip.hpp"
 #include "core/noise.hpp"
 #include "core/parallel.hpp"
 #include "core/sample.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <utility>
+#include <limits>
+#include <optional>
+#include <vector>
 
 namespace functional_fx_suite::effects::lensflare
 {
@@ -22,8 +25,13 @@ namespace functional_fx_suite::effects::lensflare
         scale_widths,
         rel_heights,
         rays_rotate,
+        hotspot_mode,
         hotspot,
         pivot,
+        auto_hotspots,
+        auto_threshold,
+        smoothing,
+        auto_hotspots_end,
         brightness,
         color,
         gamma,
@@ -92,15 +100,31 @@ namespace functional_fx_suite::effects::lensflare
     using core::param;
 
     static constexpr double UNBOUNDED = 1e6;
+    static constexpr int HOTSPOT_MODE = static_cast<int>(p::hotspot_mode);
+    static constexpr std::uint32_t MANUAL = 0b01;
+    static constexpr std::uint32_t AUTO = 0b10;
 
-    // Lens picks one of the built-in lenses
+    // Lens picks one of the built-in lenses; Auto puts the flare on the biggest bright light of the source
     static constexpr std::array<param, static_cast<std::size_t>(p::count)> PARAMS{
         param::choice(1, "lens", "Lens", "Basic Glow|Prime|Zoom|Anamorphic|Sun|Hex Ghosts").value(1),
         param::scalar(2, "scale_widths", "Scale Widths").value(1.155).range(0, UNBOUNDED).slider(0, 5),
         param::scalar(3, "rel_heights", "Rel Heights").value(1).range(-UNBOUNDED, UNBOUNDED).slider(0.1, 10),
         param::scalar(4, "rays_rotate", "Rays Rotate").value(0).range(-UNBOUNDED, UNBOUNDED).slider(-180, 180),
-        param::point(5, "hotspot", "Hotspot").value({-0.2222, 0, 0}),
+        param::choice(69, "hotspot_mode", "Hotspot Mode", "Manual|Auto"),
+        param::point(5, "hotspot", "Hotspot").value({-0.2222, 0, 0}).enabled_when(HOTSPOT_MODE, MANUAL),
         param::point(6, "pivot", "Pivot").value({0, 0, 0}),
+        param::group(70, "auto_hotspots", "Auto Hotspots"),
+        param::scalar(71, "auto_threshold", "Auto Threshold")
+            .value(0.85)
+            .range(0, UNBOUNDED)
+            .slider(0, 1)
+            .enabled_when(HOTSPOT_MODE, AUTO),
+        param::scalar(74, "smoothing", "Smoothing")
+            .value(0)
+            .range(0, UNBOUNDED)
+            .slider(0, 0.2)
+            .enabled_when(HOTSPOT_MODE, AUTO),
+        param::group_end(73, "auto_hotspots_end"),
         param::scalar(7, "brightness", "Brightness").value(1).range(0, UNBOUNDED).slider(0, 2),
         param::color(8, "color", "Color").value({1, 1, 1}),
         param::scalar(9, "gamma", "Gamma").value(1).range(0.1, UNBOUNDED).slider(1, 3),
@@ -222,6 +246,120 @@ namespace functional_fx_suite::effects::lensflare
         return 1.0 - (sum / total);
     }
 
+    // where a flare starts, in pixels, and how strongly; Auto fades a light's flare in as it rises above the threshold
+    struct light
+    {
+        double x = 0;
+        double y = 0;
+        double gain = 1;
+    };
+
+    // Smoothing merges lights within its reach (frame units) so the flare doesn't jump between them
+    static std::optional<light> find_light(const core::image& src, const core::frame& f, double threshold,
+                                           double smoothing)
+    {
+        constexpr double CELLS_PER_WIDTH = 160.0;
+        const int cell = std::max(1, static_cast<int>(std::lround(f.width / CELLS_PER_WIDTH)));
+        const core::rect& b = src.bounds;
+        const core::buffer cells = core::box_mean(src, cell);
+        const core::image& cg = cells.view();
+        const int gw = cg.bounds.width();
+        const int gh = cg.bounds.height();
+        std::vector<double> excess(static_cast<std::size_t>(gw) * gh);
+        for (std::size_t i = 0; i < excess.size(); ++i)
+        {
+            const float* m = cg.data + (i * static_cast<std::size_t>(cg.channels));
+            excess[i] = core::color::luma(m[0], m[1], m[2]) - threshold;
+        }
+        // blurred after the threshold so a strong blur can't dim a light below it
+        std::vector<double> weight(excess.size());
+        double cutoff = 0.0;
+        if (smoothing > 0.0)
+        {
+            core::buffer spread(core::rect{0, 0, gw, gh}, 1);
+            const core::image& sg = spread.view();
+            for (std::size_t i = 0; i < excess.size(); ++i)
+            {
+                sg.data[i] = static_cast<float>(std::max(excess[i], 0.0));
+            }
+            const double amount = core::blur::amount_px(smoothing, f) / cell;
+            core::blur::gaussian(sg, amount, amount, core::blur::edge::reflect);
+            double top = 0.0;
+            for (std::size_t i = 0; i < weight.size(); ++i)
+            {
+                weight[i] = sg.data[i];
+                top = std::max(top, weight[i]);
+            }
+            // above the blur's rounding noise
+            constexpr double FLOOR = 1e-4;
+            cutoff = top * FLOOR;
+        }
+        const auto member = [&](std::size_t i) {
+            return smoothing > 0.0 ? weight[i] > cutoff && cutoff > 0.0 : excess[i] >= 0.0;
+        };
+
+        struct patch
+        {
+            double weight = 0;
+            double x = 0;
+            double y = 0;
+            double peak = 0;
+        };
+        std::optional<patch> biggest;
+        std::vector<bool> seen(excess.size(), false);
+        std::vector<std::size_t> stack;
+        for (std::size_t start = 0; start < excess.size(); ++start)
+        {
+            if (seen[start] || !member(start))
+            {
+                continue;
+            }
+            // flood fill over 4-neighbours
+            patch pt{.peak = std::numeric_limits<double>::lowest()};
+            seen[start] = true;
+            stack.assign(1, start);
+            while (!stack.empty())
+            {
+                const std::size_t i = stack.back();
+                stack.pop_back();
+                const int gx = static_cast<int>(i % static_cast<std::size_t>(gw));
+                const int gy = static_cast<int>(i / static_cast<std::size_t>(gw));
+                // a cell right at the threshold still counts a little, so no patch weighs 0
+                // cells Smoothing only reached group the patch but don't move it
+                const double w = excess[i] >= 0.0 ? excess[i] + 1e-6 : 0.0;
+                pt.weight += w;
+                pt.x += w * (b.x0 + (gx + 0.5) * cell);
+                pt.y += w * (b.y0 + (gy + 0.5) * cell);
+                pt.peak = std::max(pt.peak, excess[i]);
+                for (const auto [nx, ny] :
+                     {std::array{gx - 1, gy}, std::array{gx + 1, gy}, std::array{gx, gy - 1}, std::array{gx, gy + 1}})
+                {
+                    if (nx < 0 || ny < 0 || nx >= gw || ny >= gh)
+                    {
+                        continue;
+                    }
+                    const std::size_t n = static_cast<std::size_t>(ny) * gw + nx;
+                    if (!seen[n] && member(n))
+                    {
+                        seen[n] = true;
+                        stack.push_back(n);
+                    }
+                }
+            }
+            if (pt.peak >= 0.0 && (!biggest || pt.weight > biggest->weight))
+            {
+                biggest = pt;
+            }
+        }
+        if (!biggest)
+        {
+            return std::nullopt;
+        }
+        const double headroom = std::max(0.05, 1.0 - threshold);
+        return light{biggest->x / biggest->weight, biggest->y / biggest->weight,
+                     std::min(1.0, biggest->peak / headroom)};
+    }
+
     // smooth noise over time, sharpened by Randomness
     static double flicker(double amp, double speed, double randomness, double time)
     {
@@ -238,11 +376,11 @@ namespace functional_fx_suite::effects::lensflare
     }
 
     // Diffraction Glow: the occluder's edges near the hotspot, blurred, tinted and added to the flare
-    static void add_diffraction(const core::image& flare, core::buffer occluder, const core::param_values& v,
-                                const core::frame& f, double hx, double hy, const core::color::rgb& tint)
+    static void add_diffraction(const core::image& flare, const core::image& occluder_edges,
+                                const core::param_values& v, const core::frame& f, double hx, double hy,
+                                const core::color::rgb& tint)
     {
-        core::edges::prepare(occluder.view(), 0.0, 1.0, f);
-        const core::buffer edges = core::edges::magnitude(occluder.view());
+        const core::buffer edges = core::buffer::copy_of(occluder_edges);
         const core::image& e = edges.view();
         const double rx =
             std::max(core::blur::amount_px(v.scalar(p::glow_radius), f) * v.scalar(p::scale_widths), 1e-6);
@@ -270,8 +408,10 @@ namespace functional_fx_suite::effects::lensflare
     {
         const core::param_values& v = *args.params;
         const core::frame& f = args.geometry;
-        const double hx = f.to_px_x(v.vec(p::hotspot)[0]);
-        const double hy = f.to_px_y(v.vec(p::hotspot)[1]);
+        const std::optional<light> found =
+            v.choice(p::hotspot_mode) == 1
+                ? find_light(args.src, f, v.scalar(p::auto_threshold), v.scalar(p::smoothing))
+                : light{f.to_px_x(v.vec(p::hotspot)[0]), f.to_px_y(v.vec(p::hotspot)[1])};
         const double px = f.to_px_x(v.vec(p::pivot)[0]);
         const double py = f.to_px_y(v.vec(p::pivot)[1]);
 
@@ -295,39 +435,9 @@ namespace functional_fx_suite::effects::lensflare
         const auto center_zone = [&](const std::array<double, 2>& t) {
             return zone(std::hypot(t[0] - pivot_t[0], t[1] - pivot_t[1]), center_radius, center_falloff);
         };
-        const std::array<double, 2> hotspot_t = trigger_at(hx, hy);
-        const double edge = edge_zone(hotspot_t);
-        const double center = center_zone(hotspot_t);
-        double bright =
-            std::lerp(1.0, v.scalar(p::edge_scale_brightness), edge) *
-            std::lerp(1.0, v.scalar(p::center_scale_brightness), center) *
-            flicker(v.scalar(p::flicker_amp), v.scalar(p::flicker_speed), v.scalar(p::flicker_randomness), args.time);
-        double widths = std::lerp(1.0, v.scalar(p::edge_scale_widths), edge) *
-                        std::lerp(1.0, v.scalar(p::center_scale_widths), center);
-
-        // occlusion dims and narrows the flare by the hidden share; Use Color filters it by the mask's color
-        core::buffer occluder;
-        core::param_values::value mask_color{1, 1, 1};
-        if (args.mask != nullptr)
-        {
-            if (const int from = v.choice(p::occlusion_from); from != 0)
-            {
-                occluder = core::mask::build(args, from == 1 ? core::mask::source::luma : core::mask::source::alpha,
-                                             0.0, v.toggle(p::invert_occlusion));
-                const double hidden = 1.0 - visibility(occluder.view(), hx, hy,
-                                                       core::blur::amount_px(v.scalar(p::occlusion_softness), f));
-                bright *= std::max(0.0, 1.0 - (v.scalar(p::occlusion_scale_brightness) * hidden));
-                widths *= std::max(0.0, 1.0 - (v.scalar(p::occlusion_scale_widths) * hidden));
-            }
-            const float* m = v.toggle(p::use_color) ? core::sample::nearest(*args.mask, hx, hy) : nullptr;
-            if (m != nullptr && m[3] > 0.0f)
-            {
-                mask_color = {m[0] / m[3], m[1] / m[3], m[2] / m[3]};
-            }
-        }
 
         // Brightness x Color x a group's color, times `amount` and filtered by `filter`
-        const auto light = [&](p tint, double amount, const core::param_values::value& filter) {
+        const auto tinted = [&](p tint, double amount, const core::param_values::value& filter) {
             core::color::rgb out{};
             for (std::size_t c = 0; c < 3; ++c)
             {
@@ -336,32 +446,25 @@ namespace functional_fx_suite::effects::lensflare
             }
             return out;
         };
-        const double hotspot = v.scalar(p::hotspot_bright) * bright;
         const core::glow::atmosphere atmosphere = core::glow::make_atmosphere(
             v.scalar(p::atmosphere_amp), v.scalar(p::atmosphere_freq), v.scalar(p::atmosphere_detail),
             v.scalar(p::atmosphere_seed), v.scalar(p::atmosphere_speed), args.time);
-        const core::flare::settings settings{
-            .hotspot_x = hx,
-            .hotspot_y = hy,
-            .pivot_x = px,
-            .pivot_y = py,
-            .unit = f.width * v.scalar(p::scale_widths) / FLARE_UNITS_PER_WIDTH,
-            .rel_height = v.scalar(p::rel_heights),
-            .width_scale = widths,
-            .gamma = v.scalar(p::gamma),
-            .saturation = v.scalar_f(p::saturation),
-            .rays_rotate = v.scalar(p::rays_rotate),
-            .rays_num_scale = v.scalar(p::rays_num_scale),
-            .rays_length = v.scalar(p::rays_length),
-            .rays_thickness = v.scalar(p::rays_thickness),
-            .other_width = v.scalar(p::other_width),
-            .hotspot_color = light(p::hotspot_color, hotspot, mask_color),
-            .rays_color = light(p::hotspot_color, hotspot * v.scalar(p::rays_brightness), mask_color),
-            .other_color = light(p::other_color, v.scalar(p::other_brightness) * bright, mask_color),
-            .priority_only = v.choice(p::performance) == 1,
-            .atmosphere = v.scalar(p::atmosphere_amp) != 0.0 ? &atmosphere : nullptr,
-            .geometry = f,
-        };
+        const double flickering =
+            flicker(v.scalar(p::flicker_amp), v.scalar(p::flicker_speed), v.scalar(p::flicker_randomness), args.time);
+        const int occlusion_from = args.mask != nullptr ? v.choice(p::occlusion_from) : 0;
+        const core::buffer occluder =
+            occlusion_from != 0
+                ? core::mask::build(args, occlusion_from == 1 ? core::mask::source::luma : core::mask::source::alpha,
+                                    0.0, v.toggle(p::invert_occlusion))
+                : core::buffer{};
+        // prepared on a copy, as visibility() reads the occluder unprepared
+        core::buffer occluder_edges;
+        if (occluder.view().data != nullptr && v.scalar(p::diffraction_glow) != 0.0)
+        {
+            const core::buffer prepared = core::buffer::copy_of(occluder.view());
+            core::edges::prepare(prepared.view(), 0.0, 1.0, f);
+            occluder_edges = core::edges::magnitude(prepared.view());
+        }
 
         // the flare over the output window, padded so Blur Flare reads real flare at the window edge
         const core::image& dst = args.dst;
@@ -370,12 +473,65 @@ namespace functional_fx_suite::effects::lensflare
         core::buffer flare_buf(
             core::rect{dst.bounds.x0 - pad, dst.bounds.y0 - pad, dst.bounds.x1 + pad, dst.bounds.y1 + pad}, 3);
         const core::image& flare = flare_buf.view();
-        core::flare::draw(flare, core::flare::lenses()[static_cast<std::size_t>(v.choice(p::lens))], settings);
-        if (occluder.view().data != nullptr && v.scalar(p::diffraction_glow) != 0.0)
+        if (found)
         {
-            const double glow = v.scalar(p::hotspot_bright) * v.scalar(p::diffraction_glow);
-            add_diffraction(flare, std::move(occluder), v, f, hx, hy,
-                            light(p::hotspot_color, glow, v.vec(p::glow_color)));
+            const light& l = *found;
+            const double hx = l.x;
+            const double hy = l.y;
+            const std::array<double, 2> hotspot_t = trigger_at(hx, hy);
+            const double edge = edge_zone(hotspot_t);
+            const double center = center_zone(hotspot_t);
+            double bright = std::lerp(1.0, v.scalar(p::edge_scale_brightness), edge) *
+                            std::lerp(1.0, v.scalar(p::center_scale_brightness), center) * flickering * l.gain;
+            double widths = std::lerp(1.0, v.scalar(p::edge_scale_widths), edge) *
+                            std::lerp(1.0, v.scalar(p::center_scale_widths), center);
+
+            // occlusion dims and narrows the flare by the hidden share; Use Color filters it by the mask's color
+            core::param_values::value mask_color{1, 1, 1};
+            if (occluder.view().data != nullptr)
+            {
+                const double hidden = 1.0 - visibility(occluder.view(), hx, hy,
+                                                       core::blur::amount_px(v.scalar(p::occlusion_softness), f));
+                bright *= std::max(0.0, 1.0 - (v.scalar(p::occlusion_scale_brightness) * hidden));
+                widths *= std::max(0.0, 1.0 - (v.scalar(p::occlusion_scale_widths) * hidden));
+            }
+            const float* m =
+                args.mask != nullptr && v.toggle(p::use_color) ? core::sample::nearest(*args.mask, hx, hy) : nullptr;
+            if (m != nullptr && m[3] > 0.0f)
+            {
+                mask_color = {m[0] / m[3], m[1] / m[3], m[2] / m[3]};
+            }
+
+            const double hotspot = v.scalar(p::hotspot_bright) * bright;
+            const core::flare::settings settings{
+                .hotspot_x = hx,
+                .hotspot_y = hy,
+                .pivot_x = px,
+                .pivot_y = py,
+                .unit = f.width * v.scalar(p::scale_widths) / FLARE_UNITS_PER_WIDTH,
+                .rel_height = v.scalar(p::rel_heights),
+                .width_scale = widths,
+                .gamma = v.scalar(p::gamma),
+                .saturation = v.scalar_f(p::saturation),
+                .rays_rotate = v.scalar(p::rays_rotate),
+                .rays_num_scale = v.scalar(p::rays_num_scale),
+                .rays_length = v.scalar(p::rays_length),
+                .rays_thickness = v.scalar(p::rays_thickness),
+                .other_width = v.scalar(p::other_width),
+                .hotspot_color = tinted(p::hotspot_color, hotspot, mask_color),
+                .rays_color = tinted(p::hotspot_color, hotspot * v.scalar(p::rays_brightness), mask_color),
+                .other_color = tinted(p::other_color, v.scalar(p::other_brightness) * bright, mask_color),
+                .priority_only = v.choice(p::performance) == 1,
+                .atmosphere = v.scalar(p::atmosphere_amp) != 0.0 ? &atmosphere : nullptr,
+                .geometry = f,
+            };
+            core::flare::draw(flare, core::flare::lenses()[static_cast<std::size_t>(v.choice(p::lens))], settings);
+            if (occluder_edges.view_if_set() != nullptr)
+            {
+                const double glow = v.scalar(p::hotspot_bright) * v.scalar(p::diffraction_glow) * l.gain;
+                add_diffraction(flare, occluder_edges.view(), v, f, hx, hy,
+                                tinted(p::hotspot_color, glow, v.vec(p::glow_color)));
+            }
         }
         if (const auto hue = v.scalar_f(p::hue_shift); hue != 0.0f)
         {
@@ -450,8 +606,9 @@ namespace functional_fx_suite::effects::lensflare
             .match_name = "f_lensflare",
             .name = "f_lensflare",
             .category = "Functional Lighting",
-            .description = "Draws a lens flare from a hotspot through a pivot with built-in lenses, edge and centre "
-                           "triggers and optional occlusion by a mask layer.",
+            .description =
+                "Draws a lens flare from a hotspot, or from the biggest bright light it finds, through a pivot with "
+                "built-in lenses, edge and centre triggers and optional occlusion by a mask layer.",
             .params = PARAMS,
             .mask_input = "Occlusion Mask",
             .background_input = "",

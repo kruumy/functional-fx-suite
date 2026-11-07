@@ -32,7 +32,8 @@ set(FFX_EFFECTS shake tint rays glow ultraglow glowaura glowdark glowrings glint
     flicker mosaic scanlines halftone halftonecolor jpegdamage pixelsort digitaldamage tvdamage filmdamage
     distort distortblur distortchroma distortrgb warpchroma warpfisheye warppuddle zblur blurmocurves
     pseudocolor psykoblobs psykostripes ascii rollingbar zdefocus lensflare timewarprgb
-    timedisplace motiondetect freezeframe jitterframes reverseedits)
+    timedisplace motiondetect freezeframe jitterframes reverseedits lensdirt digitize
+    heatdistortion)
 
 add_library(${PROJECT_NAME} STATIC
     src/core/blur.cpp
@@ -53,6 +54,7 @@ add_library(${PROJECT_NAME} STATIC
     src/effects/blurmocurves.cpp
     src/effects/catalog.cpp
     src/effects/digitaldamage.cpp
+    src/effects/digitize.cpp
     src/effects/distort.cpp
     src/effects/distortblur.cpp
     src/effects/distortchroma.cpp
@@ -71,9 +73,11 @@ add_library(${PROJECT_NAME} STATIC
     src/effects/glowrings.cpp
     src/effects/halftone.cpp
     src/effects/halftonecolor.cpp
+    src/effects/heatdistortion.cpp
     src/effects/hotspots.cpp
     src/effects/jitterframes.cpp
     src/effects/jpegdamage.cpp
+    src/effects/lensdirt.cpp
     src/effects/lensflare.cpp
     src/effects/mosaic.cpp
     src/effects/motiondetect.cpp
@@ -178,6 +182,9 @@ if(FFX_BUILD_AE)
         ffx_add_ae_plugin(freezeframe CATEGORY "Functional Time" WIDE_TIME)
         ffx_add_ae_plugin(jitterframes CATEGORY "Functional Time" WIDE_TIME)
         ffx_add_ae_plugin(reverseedits CATEGORY "Functional Time" WIDE_TIME)
+        ffx_add_ae_plugin(lensdirt CATEGORY "Functional Lighting")
+        ffx_add_ae_plugin(digitize CATEGORY "Functional Stylize" WIDE_TIME)
+        ffx_add_ae_plugin(heatdistortion CATEGORY "Functional Distort" TIME_VARYING)
         if(FFX_BUILD_TESTS AND WIN32)
             ffx_add_host_test(ae "${FFX_AE_SDK_DIR}/Headers" "${FFX_AE_SDK_DIR}/Headers/SP")
             target_compile_definitions(ae_host_test PRIVATE _WINDOWS)

@@ -3,6 +3,7 @@
 #include "effects/badcolors.hpp"
 #include "effects/blurmocurves.hpp"
 #include "effects/digitaldamage.hpp"
+#include "effects/digitize.hpp"
 #include "effects/distort.hpp"
 #include "effects/distortblur.hpp"
 #include "effects/distortchroma.hpp"
@@ -21,9 +22,11 @@
 #include "effects/glowrings.hpp"
 #include "effects/halftone.hpp"
 #include "effects/halftonecolor.hpp"
+#include "effects/heatdistortion.hpp"
 #include "effects/hotspots.hpp"
 #include "effects/jitterframes.hpp"
 #include "effects/jpegdamage.hpp"
+#include "effects/lensdirt.hpp"
 #include "effects/lensflare.hpp"
 #include "effects/mosaic.hpp"
 #include "effects/motiondetect.hpp"
@@ -55,7 +58,7 @@ namespace functional_fx_suite::effects::catalog
 {
     std::span<const core::effect* const> all()
     {
-        static const std::array<const core::effect*, 49> EFFECTS{
+        static const std::array<const core::effect*, 52> EFFECTS{
             &shake::get(),         &tint::get(),          &rays::get(),         &glow::get(),
             &ultraglow::get(),     &glowaura::get(),      &glowdark::get(),     &glowrings::get(),
             &glint::get(),         &hotspots::get(),      &edgerays::get(),     &vignette::get(),
@@ -68,7 +71,7 @@ namespace functional_fx_suite::effects::catalog
             &pseudocolor::get(),   &psykoblobs::get(),    &psykostripes::get(), &ascii::get(),
             &rollingbar::get(),    &zdefocus::get(),      &lensflare::get(),    &timewarprgb::get(),
             &timedisplace::get(),  &motiondetect::get(),  &freezeframe::get(),  &jitterframes::get(),
-            &reverseedits::get()};
+            &reverseedits::get(),  &lensdirt::get(),      &digitize::get(),     &heatdistortion::get()};
         return EFFECTS;
     }
 

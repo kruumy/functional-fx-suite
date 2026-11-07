@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <numeric>
+#include <string_view>
 #include <vector>
 
 namespace functional_fx_suite::effects::pixelsort
@@ -30,10 +32,17 @@ namespace functional_fx_suite::effects::pixelsort
         vary_start,
         inner_radius,
         thickness,
-        threshold,
-        sort_direction,
-        reverse_sort_direction,
         sort_type,
+        group_by,
+        threshold,
+        threshold_high,
+        sort_direction,
+        edge_threshold,
+        sort_transparent,
+        reverse_sort_direction,
+        reveal_mode,
+        reveal,
+        reveal_noise,
         randomly_restart_sort,
         soften_threshold_mask,
         seed,
@@ -53,8 +62,12 @@ namespace functional_fx_suite::effects::pixelsort
     static constexpr std::uint32_t RADIAL = 0b010;
     static constexpr std::uint32_t CIRCULAR = 0b100;
 
+    static constexpr std::string_view CHANNELS =
+        "Monochrome|Average|Minimum|Maximum|Red|Green|Blue|Hue|Saturation|Brightness|Alpha|Lightness";
+
     // the three styles (popup order Linear, Radial, Circular) share every parameter after the geometry;
-    // angles are in degrees, counter-clockwise from the +x axis; radii are in xy units (half frame widths)
+    // angles are in degrees, counter-clockwise from the +x axis; radii are in xy units (half frame widths);
+    // runs are the pixels whose Group By value lies in the threshold range, split where it jumps by Edge Threshold
     static constexpr std::array<param, static_cast<std::size_t>(p::count)> PARAMS{
         param::choice(1, "style", "Style", "Linear|Radial|Circular"),
         param::scalar(2, "sort_angle", "Sort Angle")
@@ -101,11 +114,20 @@ namespace functional_fx_suite::effects::pixelsort
             .range(-UNBOUNDED, UNBOUNDED)
             .slider(0, 2.2)
             .enabled_when(STYLE, CIRCULAR),
-        param::scalar(15, "threshold", "Threshold").value(0.3).range(-UNBOUNDED, UNBOUNDED).slider(0, 1),
-        param::choice(16, "sort_direction", "Sort Direction", "Sort Below Threshold|Sort Above Threshold").value(1),
+        param::choice(18, "sort_type", "Sort Type", CHANNELS),
+        param::choice(27, "group_by", "Group By",
+                      "Sort Type|Monochrome|Average|Minimum|Maximum|Red|Green|Blue|Hue|Saturation|Brightness|Alpha|"
+                      "Lightness"),
+        param::scalar(15, "threshold", "Threshold Low").value(0.3).range(-UNBOUNDED, UNBOUNDED).slider(0, 1),
+        param::scalar(28, "threshold_high", "Threshold High").value(UNBOUNDED).range(-UNBOUNDED, UNBOUNDED).slider(0, 1),
+        // order kept from the old Sort Below|Sort Above popup so saved projects keep their meaning
+        param::choice(16, "sort_direction", "Sort Direction", "Sort Outside Range|Sort Inside Range").value(1),
+        param::scalar(29, "edge_threshold", "Edge Threshold").value(1).range(0, UNBOUNDED).slider(0, 1),
+        param::toggle(30, "sort_transparent", "Sort Transparent"),
         param::toggle(17, "reverse_sort_direction", "Reverse Sort Direction"),
-        param::choice(18, "sort_type", "Sort Type",
-                      "Monochrome|Average|Minimum|Maximum|Red|Green|Blue|Hue|Saturation|Brightness"),
+        param::choice(31, "reveal_mode", "Reveal Mode", "Re-Order|Flow Dark|Flow Bright"),
+        param::scalar(32, "reveal", "Reveal").value(1).range(0, 1),
+        param::scalar(33, "reveal_noise", "Reveal Noise").value(0).range(0, 1),
         param::scalar(19, "randomly_restart_sort", "Randomly Restart Sort").value(100).range(0, 1000),
         param::scalar(20, "soften_threshold_mask", "Soften Threshold Mask").value(0.1).range(0, UNBOUNDED).slider(0, 1),
         param::scalar(21, "seed", "Seed").value(0.273).range(-UNBOUNDED, UNBOUNDED).slider(0, 1),
@@ -121,6 +143,13 @@ namespace functional_fx_suite::effects::pixelsort
         linear,
         radial,
         circular
+    };
+
+    enum class reveal : std::uint8_t
+    {
+        reorder,
+        flow_dark,
+        flow_bright
     };
 
     enum class show : std::uint8_t
@@ -162,6 +191,10 @@ namespace functional_fx_suite::effects::pixelsort
         }
         case 8:
             return hi > 0.0f ? (hi - lo) / hi : 0.0f;
+        case 10:
+            return c[3];
+        case 11:
+            return (hi + lo) * 0.5f;
         default:
             return core::color::luma(c[0], c[1], c[2]);
         }
@@ -276,12 +309,16 @@ namespace functional_fx_suite::effects::pixelsort
         const core::frame& f = args.geometry;
         const int w = b.width();
         const int type = v.choice(p::sort_type);
-        const float threshold = v.scalar_f(p::threshold);
-        const bool above = v.choice(p::sort_direction) == 1;
+        const int group_type = v.choice(p::group_by) - 1;
+        const float low = v.scalar_f(p::threshold);
+        const float high = v.scalar_f(p::threshold_high);
+        const bool inside = v.choice(p::sort_direction) == 1;
+        const bool sort_transparent = v.toggle(p::sort_transparent);
         const std::uint32_t seed = core::noise::seed_bits(v.scalar(p::seed));
 
-        // sort values and the soft threshold mask, both from the premultiplied pixels
+        // sort values, group values and the soft threshold mask, all from the premultiplied pixels
         core::buffer values(b, 1);
+        core::buffer groups(b, 1);
         core::buffer soft(b, 1);
         core::buffer noise(b, 1);
         const double freq = v.scalar(p::randomly_restart_sort);
@@ -291,9 +328,13 @@ namespace functional_fx_suite::effects::pixelsort
                 const double ry = core::XY_PER_FRAME_UNIT * f.to_ny(y + 0.5) * freq;
                 for (int x = b.x0; x < b.x1; ++x)
                 {
-                    const float s = sort_value(src.at(x, y), type);
+                    const float* c = src.at(x, y);
+                    const float s = sort_value(c, type);
+                    const float g = group_type < 0 ? s : sort_value(c, group_type);
                     *values.view().at(x, y) = s;
-                    *soft.view().at(x, y) = (s >= threshold) == above ? 1.0f : 0.0f;
+                    *groups.view().at(x, y) = g;
+                    const bool sorted = (g >= low && g <= high) == inside && (sort_transparent || c[3] > 0.0f);
+                    *soft.view().at(x, y) = sorted ? 1.0f : 0.0f;
                     const double rx = core::XY_PER_FRAME_UNIT * f.to_nx(x + 0.5) * freq;
                     *noise.view().at(x, y) =
                         freq > 0.0 ? static_cast<float>(core::noise::fbm_3d(seed, rx, ry, 0.0, 2, 0.5)) : 1.0f;
@@ -370,11 +411,76 @@ namespace functional_fx_suite::effects::pixelsort
         const auto key = [&](int i) {
             constexpr float CHUNK_LEVEL = 0.1f;
             const auto [x, y] = pixel(i);
-            return *noise.view().at(x, y) < CHUNK_LEVEL ? (above ? 0.0f : 1.0f) : *values.view().at(x, y);
+            return *noise.view().at(x, y) < CHUNK_LEVEL ? (inside ? 0.0f : 1.0f) : *values.view().at(x, y);
         };
+        const auto group = [&](int i) {
+            const auto [x, y] = pixel(i);
+            return *groups.view().at(x, y);
+        };
+        const float edge = v.scalar_f(p::edge_threshold);
+
+        // Reveal: Re-Order moves every pixel part of the way from its place to its sorted place; Flow Dark and
+        // Flow Bright sort only the darkest or brightest share (by the key's place in the run, plus noise) and keep
+        // the others in order behind or ahead of them
+        const auto reveal_mode = static_cast<reveal>(v.choice(p::reveal_mode));
+        const double revealed = v.scalar(p::reveal);
+        const double reveal_noise = v.scalar(p::reveal_noise);
+        const bool full = revealed >= 1.0 && reveal_noise <= 0.0;
+        // (group, value) pairs ordered lexicographically
+        using rank = std::array<double, 2>;
+        const auto arrange = [&](const std::vector<int>& run, std::vector<int>& by_value, std::vector<rank>& ranks,
+                                 std::vector<std::size_t>& order_in_run) {
+            by_value = run;
+            if (full)
+            {
+                std::ranges::stable_sort(by_value,
+                                         [&](int a, int c) { return reverse ? key(a) > key(c) : key(a) < key(c); });
+                return;
+            }
+            const std::size_t n = run.size();
+            ranks.resize(n);
+            float lo = std::numeric_limits<float>::max();
+            float hi = std::numeric_limits<float>::lowest();
+            for (const int i : run)
+            {
+                lo = std::min(lo, key(i));
+                hi = std::max(hi, key(i));
+            }
+            for (std::size_t k = 0; k < n; ++k)
+            {
+                const double t = static_cast<double>(k) / static_cast<double>(n - 1);
+                double kn = hi > lo ? (key(run[k]) - lo) / (hi - lo) : 0.0;
+                kn = reverse ? 1.0 - kn : kn;
+                kn =
+                    std::lerp(kn, core::noise::unit(core::noise::combine(seed + 2, static_cast<std::uint32_t>(run[k]))),
+                              reveal_noise);
+                switch (reveal_mode)
+                {
+                case reveal::reorder:
+                    ranks[k] = {0.0, std::lerp(t, kn, revealed)};
+                    break;
+                case reveal::flow_dark:
+                    ranks[k] = kn < revealed ? rank{0.0, kn} : rank{1.0, t};
+                    break;
+                case reveal::flow_bright:
+                    ranks[k] = kn > 1.0 - revealed ? rank{1.0, kn} : rank{0.0, t};
+                    break;
+                }
+            }
+            order_in_run.resize(n);
+            std::iota(order_in_run.begin(), order_in_run.end(), std::size_t{0});
+            std::ranges::stable_sort(order_in_run, [&](std::size_t a, std::size_t c) { return ranks[a] < ranks[c]; });
+            for (std::size_t k = 0; k < n; ++k)
+            {
+                by_value[k] = run[order_in_run[k]];
+            }
+        };
+
         core::parallel::for_range(0, pl.lines, [&](int l_begin, int l_end) {
             std::vector<int> run;
             std::vector<int> by_value;
+            std::vector<rank> ranks;
+            std::vector<std::size_t> order_in_run;
             for (int l = l_begin; l < l_end; ++l)
             {
                 const auto first = order.begin() + start[static_cast<std::size_t>(l)];
@@ -393,15 +499,18 @@ namespace functional_fx_suite::effects::pixelsort
                             ++it;
                             break;
                         }
+                        // a jump in the group value starts a new run at this pixel
+                        if (!run.empty() && std::abs(group(*it) - group(run.back())) > edge)
+                        {
+                            break;
+                        }
                         run.push_back(*it);
                     }
                     if (run.size() < 2)
                     {
                         continue;
                     }
-                    by_value = run;
-                    std::ranges::stable_sort(by_value,
-                                             [&](int a, int c) { return reverse ? key(a) > key(c) : key(a) < key(c); });
+                    arrange(run, by_value, ranks, order_in_run);
                     for (std::size_t k = 0; k < run.size(); ++k)
                     {
                         const auto [dx, dy] = pixel(run[k]);

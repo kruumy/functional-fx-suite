@@ -422,6 +422,136 @@ namespace functional_fx_suite::tests::effects_test
             check(sorted.max_diff > 0.1 && std::abs(sorted.sum_diff) < 1e-2,
                   std::format("f_pixelsort style {} only reorders pixels", style));
         }
+        const auto layers = [](double pixel, double wavy, double horizontal) {
+            return [=](const core::effect& fx, core::param_values& v) {
+                set(fx, v, "pixel_strength", pixel);
+                set(fx, v, "wavy_strength", wavy);
+                set(fx, v, "horizontal_strength", horizontal);
+                set(fx, v, "pixel_frame_shift", 0.0);
+                set(fx, v, "wavy_frame_shift", 0.0);
+                set(fx, v, "horizontal_frame_shift", 0.0);
+                set(fx, v, "block_size", 0.125); // 8 px on the 64 px card, on the grid centred on the frame
+                set(fx, v, "block_rel_height", 1.0);
+            };
+        };
+        check(run("f_digitize", src.view(), layers(0, 0, 0)).max_diff < 1e-6,
+              "f_digitize with every layer off is identity");
+        const run_result blocks = run("f_digitize", src.view(), layers(1, 0, 0));
+        check(blocks.max_diff > 0.05 && blocks.out.view().at(1, 1)[0] == blocks.out.view().at(6, 6)[0] &&
+                  blocks.out.view().at(1, 1)[0] != blocks.out.view().at(9, 1)[0],
+              "f_digitize fills each block with one color");
+        for (const auto& [lines, label] :
+             {std::pair{layers(0, 1, 0), "wavy"}, std::pair{layers(0, 0, 1), "horizontal"}})
+        {
+            const run_result r = run("f_digitize", src.view(), lines);
+            bool brighter = true;
+            for (int y = 0; y < 48; ++y)
+            {
+                for (int x = 0; x < 64; ++x)
+                {
+                    for (int c = 0; c < 4; ++c)
+                    {
+                        brighter = brighter && r.out.view().at(x, y)[c] >= src.view().at(x, y)[c] - 1e-6f;
+                    }
+                }
+            }
+            check(brighter && r.sum_diff > 0.1, std::format("f_digitize {} lines only brighten", label));
+        }
+        const core::effect& digitize = *effects::catalog::find("f_digitize");
+        core::param_values shifted(digitize.params);
+        check(digitize.offsets(shifted, 5) == std::vector<int>{1}, "f_digitize reads the next frame by default");
+        set(digitize, shifted, "pixel_strength", 0.0);
+        set(digitize, shifted, "wavy_strength", 0.0);
+        set(digitize, shifted, "horizontal_strength", 0.0);
+        check(digitize.offsets(shifted, 5).empty(), "f_digitize reads no frames for layers that are off");
+        const core::buffer next = solid(src.view().bounds, 0.6f);
+        const std::array<offset_frame, 1> ahead{{{1, next.view()}}};
+        check(run("f_digitize", src.view(), none, 0.5, nullptr, ahead).sum_diff !=
+                  run("f_digitize", src.view(), none).sum_diff,
+              "f_digitize builds its layers from the shifted frame");
+
+        {
+            // hard mask and no restarts, so only the range and the runs decide what moves
+            const auto hard = [](auto more) {
+                return [more](const core::effect& fx, core::param_values& v) {
+                    set(fx, v, "soften_threshold_mask", 0.0);
+                    set(fx, v, "randomly_restart_sort", 0.0);
+                    more(fx, v);
+                };
+            };
+            core::buffer bright = core::buffer::copy_of(src.view());
+            for (int i = 0; i < 64 * 48; ++i)
+            {
+                for (int c = 0; c < 3; ++c)
+                {
+                    bright.view().data[(i * 4) + c] *= 4.0f;
+                }
+            }
+            const run_result over = run("f_pixelsort", bright.view(), hard(none));
+            // the bottom row is above 1 everywhere
+            bool row_moved = false;
+            for (int x = 0; x < 64; ++x)
+            {
+                row_moved = row_moved || std::abs(over.out.view().at(x, 47)[0] - bright.view().at(x, 47)[0]) > 0.1f;
+            }
+            check(row_moved && std::abs(over.sum_diff) < 1e-1,
+                  "f_pixelsort sorts overbright pixels by default");
+            check(run("f_pixelsort", src.view(), hard([](const core::effect& fx, core::param_values& v) {
+                      set(fx, v, "sort_direction", 0.0);
+                      set(fx, v, "threshold", -1.0);
+                  })).max_diff < 1e-6,
+                  "f_pixelsort sorting outside a range holding everything is identity");
+            const auto low_half = [](double group_by) {
+                return [group_by](const core::effect& fx, core::param_values& v) {
+                    set(fx, v, "threshold", 0.0);
+                    set(fx, v, "threshold_high", 0.5);
+                    set(fx, v, "group_by", group_by);
+                };
+            };
+            check(run("f_pixelsort", src.view(), hard(low_half(0.0))).max_diff > 0.1 &&
+                      run("f_pixelsort", src.view(), hard(low_half(11.0))).max_diff < 1e-6,
+                  "f_pixelsort Group By picks the channel the range tests");
+            core::buffer holes = core::buffer::copy_of(src.view());
+            for (int y = 0; y < 48; ++y)
+            {
+                for (int x = 1; x < 64; x += 2)
+                {
+                    std::fill_n(holes.view().at(x, y), 4, 0.0f);
+                }
+            }
+            const auto everything = [](bool transparent) {
+                return [transparent](const core::effect& fx, core::param_values& v) {
+                    set(fx, v, "threshold", -1.0);
+                    set(fx, v, "sort_transparent", transparent ? 1.0 : 0.0);
+                };
+            };
+            check(run("f_pixelsort", holes.view(), hard(everything(false))).max_diff < 1e-6 &&
+                      run("f_pixelsort", holes.view(), hard(everything(true))).max_diff > 0.1,
+                  "f_pixelsort sorts transparent pixels only with Sort Transparent");
+        }
+        check(run("f_pixelsort", src.view(),
+                  [](const core::effect& fx, core::param_values& v) {
+                      set(fx, v, "reveal", 0.0);
+                  }).max_diff < 1e-6,
+              "f_pixelsort with nothing revealed is identity");
+        check(run("f_pixelsort", src.view(),
+                  [](const core::effect& fx, core::param_values& v) {
+                      set(fx, v, "edge_threshold", 0.0);
+                      set(fx, v, "randomly_restart_sort", 0.0);
+                  }).max_diff < 1e-6,
+              "f_pixelsort splitting at every jump leaves only equal runs");
+        for (int mode = 0; mode < 3; ++mode)
+        {
+            const run_result half =
+                run("f_pixelsort", src.view(), [mode](const core::effect& fx, core::param_values& v) {
+                    set(fx, v, "reveal_mode", mode);
+                    set(fx, v, "reveal", 0.5);
+                    set(fx, v, "soften_threshold_mask", 0.0);
+                    set(fx, v, "randomly_restart_sort", 0.0);
+                });
+            check(half.max_diff > 0.05 && std::abs(half.sum_diff) < 1e-2,
+                  std::format("f_pixelsort reveal mode {} half way only reorders pixels", mode));
+        }
     }
 
     static void damage()
@@ -822,6 +952,18 @@ namespace functional_fx_suite::tests::effects_test
                                      [](const core::effect& fx, core::param_values& v) { set(fx, v, "show", 2.0); });
         check(std::abs(shape.out.view().at(32, 24)[0] - 1.0f) < 1e-5 && shape.out.view().at(0, 0)[0] == 0.0f,
               "f_zdefocus Show Shape draws the lens at the frame centre");
+        check(run("f_heatdistortion", src.view(),
+                  [](const core::effect& fx, core::param_values& v) {
+                      set(fx, v, "distortion", 0.0);
+                      set(fx, v, "diffusion", 0.0);
+                  }).max_diff < 1e-6,
+              "f_heatdistortion with no distortion or diffusion is identity");
+        check(run("f_heatdistortion", src.view(), zero("distortion")).max_diff > 0.01,
+              "f_heatdistortion Diffusion blurs without distortion");
+        const auto warped = [](const core::effect& fx, core::param_values& v) { set(fx, v, "distortion", 0.02); };
+        const run_result now = run("f_heatdistortion", src.view(), warped);
+        check(now.max_diff > 0.05 && run("f_heatdistortion", src.view(), warped, 1.5).sum_diff != now.sum_diff,
+              "f_heatdistortion warps and moves over time");
     }
 
     static void background()
@@ -997,6 +1139,65 @@ namespace functional_fx_suite::tests::effects_test
         check(hot[3] == std::min(1.0f, std::max({hot[0], hot[1], hot[2]})) && hot[3] > 0.0f &&
                   std::abs(only.sum_diff - full.sum_diff) < 1e-2,
               "f_lensflare Flare Only keeps the flare alone, with alpha from its brightest channel");
+        // a bright square on opaque black
+        const auto spot = [](int sx, int sy) {
+            core::buffer b(core::rect{0, 0, 160, 90}, 4);
+            for (int y = 0; y < 90; ++y)
+            {
+                for (int x = 0; x < 160; ++x)
+                {
+                    const bool lit = std::abs(x - sx) <= 1 && std::abs(y - sy) <= 1;
+                    float* q = b.view().at(x, y);
+                    q[0] = q[1] = q[2] = lit ? 2.0f : 0.0f;
+                    q[3] = 1.0f;
+                }
+            }
+            return b;
+        };
+        const core::buffer lit = spot(40, 45);
+        const auto red = [](const run_result& r, int x, int y) { return r.out.view().at(x, y)[0]; };
+        check(run("f_lensdirt", lit.view(),
+                  [](const core::effect& f, core::param_values& v) {
+                      set(f, v, "intensity", 0.0);
+                      set(f, v, "flare_intensity", 0.0);
+                  }).max_diff < 1e-6,
+              "f_lensdirt at zero intensity is identity");
+        const run_result green = run("f_lensdirt", lit.view(), [](const core::effect& f, core::param_values& v) {
+            set(f, v, "intensity", 0.0);
+            set(f, v, "haze", 1.0);
+            v.set(static_cast<std::size_t>(std::ranges::find(f.params, "flare_color", &core::param::name) -
+                                           f.params.begin()),
+                  {0.0, 1.0, 0.0});
+        });
+        check(green.out.view().at(120, 45)[1] > 0.001f && green.out.view().at(120, 45)[0] == 0.0f,
+              "f_lensdirt Flare Color tints the flare");
+        const run_result ghost = run("f_lensdirt", lit.view(), [](const core::effect& f, core::param_values& v) {
+            set(f, v, "intensity", 0.0);
+            set(f, v, "haze", 1.0);
+            set(f, v, "pivot_angle", 0.0);
+        });
+        check(red(ghost, 120, 45) > 0.001f && red(ghost, 120, 45) > 4.0f * red(ghost, 20, 45),
+              "f_lensdirt flare mirrors the light through the frame centre");
+        const run_result dirt = run("f_lensdirt", lit.view(), none);
+        check(dirt.sum_diff > 0.0 && dirt.sum_diff == run("f_lensdirt", lit.view(), none).sum_diff,
+              "f_lensdirt lights the built-in dirt, the same every time");
+        check(run("f_lensdirt", black.view(), none).max_diff < 1e-6, "f_lensdirt without light changes nothing");
+
+        const auto automatic = [](const core::effect& f, core::param_values& v) { set(f, v, "hotspot_mode", 1.0); };
+        check(run("f_lensflare", black.view(), automatic).max_diff < 1e-6, "f_lensflare Auto finds no light in black");
+        const core::buffer corner = spot(120, 30);
+        const run_result found = run("f_lensflare", corner.view(), automatic);
+        check(red(found, 120, 30) > red(found, 44, 45) && found.sum_diff > 1.0,
+              "f_lensflare Auto puts the flare on the light");
+        const auto smooth = [](double amount) {
+            return [=](const core::effect& f, core::param_values& v) {
+                set(f, v, "hotspot_mode", 1.0);
+                set(f, v, "smoothing", amount);
+            };
+        };
+        const run_result smoothed = run("f_lensflare", corner.view(), smooth(5.0));
+        check(std::abs(smoothed.sum_diff - found.sum_diff) < 1e-3 * found.sum_diff,
+              "f_lensflare even heavy Smoothing keeps a lone light, where it is and as bright");
     }
 
     static void time_warps()

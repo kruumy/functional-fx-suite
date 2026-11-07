@@ -31,4 +31,8 @@ namespace functional_fx_suite::core
         int origin_x_ = 0;
         int origin_y_ = 0;
     };
+
+    // mean of each k x k cell of src from its bounds' corner, edge cells over the pixels they hold;
+    // bounds {0, 0, ceil(width / k), ceil(height / k)}, src's channels
+    [[nodiscard]] buffer box_mean(const image& src, int k);
 } // namespace functional_fx_suite::core

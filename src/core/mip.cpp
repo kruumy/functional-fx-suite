@@ -1,6 +1,7 @@
 #include "core/mip.hpp"
 #include "core/parallel.hpp"
 #include <algorithm>
+#include <array>
 
 namespace functional_fx_suite::core
 {
@@ -59,5 +60,34 @@ namespace functional_fx_suite::core
         l = std::clamp(l, 0, levels() - 1);
         const double s = 1.0 / static_cast<double>(1 << l);
         return sample::bilinear(level(l), (x - origin_x_) * s, (y - origin_y_) * s, mode);
+    }
+
+    buffer box_mean(const image& src, int k)
+    {
+        const rect& b = src.bounds;
+        const int channels = src.channels;
+        buffer out(rect{0, 0, (b.width() + k - 1) / k, (b.height() + k - 1) / k}, channels);
+        parallel::for_pixels(out.view().bounds, [&](int i, int j) {
+            std::array<double, 4> sum{};
+            int n = 0;
+            for (int y = b.y0 + j * k; y < std::min(b.y1, b.y0 + (j + 1) * k); ++y)
+            {
+                for (int x = b.x0 + i * k; x < std::min(b.x1, b.x0 + (i + 1) * k); ++x)
+                {
+                    const float* s = src.at(x, y);
+                    for (int c = 0; c < channels; ++c)
+                    {
+                        sum[static_cast<std::size_t>(c)] += s[c];
+                    }
+                    ++n;
+                }
+            }
+            float* d = out.view().at(i, j);
+            for (int c = 0; c < channels; ++c)
+            {
+                d[c] = static_cast<float>(sum[static_cast<std::size_t>(c)] / n);
+            }
+        });
+        return out;
     }
 } // namespace functional_fx_suite::core
