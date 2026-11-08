@@ -200,8 +200,8 @@ namespace functional_fx_suite::effects::rays
     {
         const core::param_values& v = *args.params;
         const double blur_width = v.scalar(p::blur_rays);
-        // blurring needs the surroundings, so cover the whole source in that case
-        const core::rect area = blur_width > 0.0 ? args.src.bounds : args.dst.bounds;
+        // blurring needs the surroundings, so cover the whole source too; the output can reach past the source
+        const core::rect area = blur_width > 0.0 ? args.src.bounds.united(args.dst.bounds) : args.dst.bounds;
         core::buffer out(area, 4);
         const core::image& o = out.view();
         const auto& color = v.vec(s.dark ? p::rays_color_dark : p::rays_color);

@@ -71,7 +71,7 @@ namespace functional_fx_suite::effects::digitaldamage
     static constexpr double UNBOUNDED = 1e6;
 
     static constexpr std::array<param, static_cast<std::size_t>(p::count)> PARAMS{
-        param::scalar(1, "intensity", "Intensity").value(1).range(-UNBOUNDED, UNBOUNDED).slider(0, 5),
+        param::scalar(1, "intensity", "Intensity").value(1).range(0, UNBOUNDED).slider(0, 5),
         param::scalar(2, "time_intensity", "Time Intensity").value(1).range(-UNBOUNDED, UNBOUNDED).slider(0, 5),
         param::scalar(3, "damage_size", "Damage Size").value(1).range(0.001, UNBOUNDED).slider(0.001, 2),
         param::scalar(4, "damage_size_rel_x", "Damage Size Rel X").value(1).range(0.001, UNBOUNDED).slider(0.001, 2),

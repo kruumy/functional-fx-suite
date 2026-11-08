@@ -749,6 +749,37 @@ namespace functional_fx_suite::tests::effects_test
         }
     }
 
+    // AE's output window outgrows the source when an earlier effect expands the layer, as Motion Tile does
+    static void output_past_source()
+    {
+        const core::buffer src = card(64, 48);
+        for (const core::effect* fx : effects::catalog::all())
+        {
+            core::param_values values(fx->params);
+            const bool blurs_rays = std::ranges::find(fx->params, std::string_view("blur_rays"), &core::param::name) !=
+                                    fx->params.end();
+            if (blurs_rays)
+            {
+                set(*fx, values, "blur_rays", 1.0);
+            }
+            core::buffer out(core::rect{-8, -4000, 72, 4048}, 4);
+            core::render_args args;
+            args.src = src.view();
+            args.dst = out.view();
+            args.frame_at = [](int) { return core::buffer{}; };
+            args.params = &values;
+            args.geometry = centered_frame(64, 48);
+            args.time = 0.5;
+            fx->render(args);
+            if (blurs_rays)
+            {
+                const float* far = out.view().at(30, -3990);
+                check(std::all_of(far, far + 4, [](float c) { return c == 0.0f; }),
+                      std::format("{} is clear far outside the source", fx->name));
+            }
+        }
+    }
+
     static void samples()
     {
         const core::buffer img = solid(core::rect{2, 3, 6, 7}, 0.5f);
@@ -1448,6 +1479,7 @@ int main()
     functional_fx_suite::tests::effects_test::background();
     functional_fx_suite::tests::effects_test::samples();
     functional_fx_suite::tests::effects_test::offset_bounds();
+    functional_fx_suite::tests::effects_test::output_past_source();
     functional_fx_suite::tests::effects_test::warps();
     functional_fx_suite::tests::effects_test::generators();
     functional_fx_suite::tests::effects_test::flares();

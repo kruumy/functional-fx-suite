@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 namespace functional_fx_suite::core
 {
     // half-open pixel rectangle, y down
@@ -25,6 +27,11 @@ namespace functional_fx_suite::core
         [[nodiscard]] constexpr bool contains(int x, int y) const
         {
             return x >= x0 && x < x1 && y >= y0 && y < y1;
+        }
+        // the smallest rect holding both
+        [[nodiscard]] constexpr rect united(const rect& o) const
+        {
+            return {std::min(x0, o.x0), std::min(y0, o.y0), std::max(x1, o.x1), std::max(y1, o.y1)};
         }
     };
 } // namespace functional_fx_suite::core
