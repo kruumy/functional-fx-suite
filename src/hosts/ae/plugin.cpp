@@ -21,11 +21,12 @@
 #include <utility>
 #include <vector>
 
-// FFX_AE_OUTFLAGS, FFX_AE_OUTFLAGS2, FFX_AE_VERSION, FFX_AE_TIME_VARYING and FFX_AE_WIDE_TIME come from
+// FFX_AE_OUTFLAGS, FFX_AE_OUTFLAGS2, FFX_AE_VERSION, FFX_AE_TIME_VARYING, FFX_AE_WIDE_TIME and FFX_AE_EXPAND come from
 // cmake/ae_plugin.cmake, which writes the same literals into the PiPL; AE refuses mismatches, so check them here
-static_assert(FFX_AE_OUTFLAGS == (PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_SEND_UPDATE_PARAMS_UI |
-                                  (FFX_AE_TIME_VARYING ? PF_OutFlag_NON_PARAM_VARY : 0) |
-                                  (FFX_AE_WIDE_TIME ? PF_OutFlag_WIDE_TIME_INPUT : 0)));
+static_assert(FFX_AE_OUTFLAGS ==
+              (PF_OutFlag_DEEP_COLOR_AWARE | PF_OutFlag_SEND_UPDATE_PARAMS_UI |
+               (FFX_AE_TIME_VARYING ? PF_OutFlag_NON_PARAM_VARY : 0) |
+               (FFX_AE_WIDE_TIME ? PF_OutFlag_WIDE_TIME_INPUT : 0) | (FFX_AE_EXPAND ? PF_OutFlag_I_EXPAND_BUFFER : 0)));
 static_assert(FFX_AE_OUTFLAGS2 ==
               (PF_OutFlag2_SUPPORTS_SMART_RENDER | PF_OutFlag2_FLOAT_COLOR_AWARE |
                PF_OutFlag2_SUPPORTS_THREADED_RENDERING | PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG |
@@ -83,11 +84,16 @@ namespace functional_fx_suite::hosts::ae::plugin
         return err;
     }
 
+    static double downsample(const PF_RationalScale& s)
+    {
+        return static_cast<double>(s.num) / s.den;
+    }
+
     // layer size at the current downsample; point params and worlds use these coordinates
     static core::frame layer_frame(const PF_InData* in)
     {
-        const double w = in->width * static_cast<double>(in->downsample_x.num) / in->downsample_x.den;
-        const double h = in->height * static_cast<double>(in->downsample_y.num) / in->downsample_y.den;
+        const double w = in->width * downsample(in->downsample_x);
+        const double h = in->height * downsample(in->downsample_y);
         return core::frame{w * 0.5, h * 0.5, w};
     }
 
@@ -97,9 +103,11 @@ namespace functional_fx_suite::hosts::ae::plugin
     static PF_Err global_setup(PF_InData* in, PF_OutData* out)
     {
         // the PiPL name comes from the build; refuse to load if it names a different effect
-        // and refuse an effect reading other frames without the wide time flags AE needs to invalidate its cache
+        // and refuse an effect reading other frames without the wide time flags AE needs to invalidate its cache,
+        // or growing the layer without the expand flag
         const core::effect& fx = plugin_effect::get();
-        if (fx.match_name != std::string_view(FFX_AE_MATCH_NAME) || (fx.frame_offsets != nullptr && !FFX_AE_WIDE_TIME))
+        if (fx.match_name != std::string_view(FFX_AE_MATCH_NAME) ||
+            (fx.frame_offsets != nullptr && !FFX_AE_WIDE_TIME) || (fx.output_bounds != nullptr && !FFX_AE_EXPAND))
         {
             return PF_Err_INTERNAL_STRUCT_DAMAGED;
         }
@@ -328,9 +336,15 @@ namespace functional_fx_suite::hosts::ae::plugin
         const core::effect& fx = plugin_effect::get();
         const layout l(fx);
         PF_RenderRequest req = extra->input->output_request;
-        if (fx.reads_outside)
+        const core::frame f = layer_frame(in);
+        if (fx.output_bounds != nullptr)
         {
-            const core::frame f = layer_frame(in);
+            // everything upstream produced, as an earlier effect may have grown the layer; AE clips this to its bounds
+            constexpr A_long ALL = std::numeric_limits<A_long>::max() / 4;
+            req.rect = PF_LRect{-ALL, -ALL, ALL, ALL};
+        }
+        else if (fx.reads_outside)
+        {
             req.rect =
                 PF_LRect{0, 0, static_cast<A_long>(std::ceil(f.cx * 2.0)), static_cast<A_long>(std::ceil(f.cy * 2.0))};
         }
@@ -354,7 +368,7 @@ namespace functional_fx_suite::hosts::ae::plugin
             core::render_args timing;
             set_time(timing, in);
             const std::vector<int> offsets =
-                fx.offsets(read_params(in, fx, l, layer_frame(in), in->current_time), timing.frame_number());
+                fx.offsets(read_params(in, fx, l, f, in->current_time), timing.frame_number());
             for (std::size_t i = 0; i < offsets.size(); ++i)
             {
                 check(extra->cb->checkout_layer(in->effect_ref, 0,
@@ -362,9 +376,18 @@ namespace functional_fx_suite::hosts::ae::plugin
                                                 frame_time(in, offsets[i]), in->time_step, in->time_scale, &unused));
             }
         }
+        PF_LRect max_rect = input.max_result_rect;
+        if (fx.output_bounds != nullptr)
+        {
+            const PF_LRect& m = input.max_result_rect;
+            const core::rect r = fx.output_bounds(
+                read_params(in, fx, l, f, in->current_time), core::rect{m.left, m.top, m.right, m.bottom},
+                core::pixel_scale{.x = downsample(in->downsample_x), .y = downsample(in->downsample_y)});
+            max_rect = PF_LRect{r.x0, r.y0, r.x1, r.y1};
+        }
         extra->output->result_rect =
-            fx.reads_outside ? intersect(extra->input->output_request.rect, input.max_result_rect) : input.result_rect;
-        extra->output->max_result_rect = input.max_result_rect;
+            fx.reads_outside ? intersect(extra->input->output_request.rect, max_rect) : input.result_rect;
+        extra->output->max_result_rect = max_rect;
         return PF_Err_NONE;
     }
 

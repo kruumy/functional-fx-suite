@@ -7,6 +7,7 @@
 #include "ofxProperty.h"
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <new>
 #include <stdexcept>
@@ -350,13 +351,12 @@ namespace functional_fx_suite::hosts::ofx::plugin
         return kOfxStatOK;
     }
 
-    static void set_roi(const property_set& out, const char* clip_name, const OfxRectD& r)
+    static void set_rect(const property_set& out, const char* prop, const OfxRectD& r)
     {
-        const std::string prop = std::string("OfxImageClipPropRoI_") + clip_name;
-        out.set(prop.c_str(), r.x1, 0);
-        out.set(prop.c_str(), r.y1, 1);
-        out.set(prop.c_str(), r.x2, 2);
-        out.set(prop.c_str(), r.y2, 3);
+        out.set(prop, r.x1, 0);
+        out.set(prop, r.y1, 1);
+        out.set(prop, r.x2, 2);
+        out.set(prop, r.y2, 3);
     }
 
     static OfxStatus regions_of_interest(OfxImageEffectHandle effect, OfxPropertySetHandle in_args,
@@ -370,7 +370,7 @@ namespace functional_fx_suite::hosts::ofx::plugin
             OfxRectD rod{};
             if (connected(clip) && suites.effects->clipGetRegionOfDefinition(clip, time, &rod) == kOfxStatOK)
             {
-                set_roi(out, name, rod);
+                set_rect(out, (std::string("OfxImageClipPropRoI_") + name).c_str(), rod);
             }
         };
         if (fx.reads_outside)
@@ -449,23 +449,58 @@ namespace functional_fx_suite::hosts::ofx::plugin
         return values;
     }
 
-    // the source frame in pixels at a render scale, and its pixel aspect ratio
+    // the source frame in pixels at a render scale, its pixel aspect ratio and canonical region
     struct source_geometry
     {
         core::frame f;
         double par = 1.0;
+        OfxRectD rod{};
 
         source_geometry(OfxImageClipHandle source, OfxTime time, double scale_x, double scale_y)
         {
             OfxPropertySetHandle source_props = nullptr;
             check(suites.effects->clipGetPropertySet(source, &source_props));
             par = property_set(source_props).get_double(kOfxImagePropPixelAspectRatio, 0, 1.0);
-            OfxRectD rod{};
             check(suites.effects->clipGetRegionOfDefinition(source, time, &rod));
             const double sx = scale_x / par;
             f = core::frame{(rod.x1 + rod.x2) * 0.5 * sx, -(rod.y1 + rod.y2) * 0.5 * scale_y, (rod.x2 - rod.x1) * sx};
         }
     };
+
+    // the grown output for an effect with output_bounds; the source's region otherwise
+    static OfxStatus region_of_definition(OfxImageEffectHandle effect, OfxPropertySetHandle in_args,
+                                          OfxPropertySetHandle out_args)
+    {
+        const core::effect& fx = plugin_effect::get();
+        if (fx.output_bounds == nullptr)
+        {
+            return kOfxStatReplyDefault;
+        }
+        OfxImageClipHandle source = clip_handle(effect, SOURCE_CLIP);
+        if (!connected(source))
+        {
+            return kOfxStatReplyDefault;
+        }
+        const OfxTime time = property_set(in_args).get_double(kOfxPropTime);
+        const source_geometry g(source, time, 1.0, 1.0);
+        const OfxRectD& rod = g.rod;
+        // an infinite source (kOfxFlagInfiniteMin/Max) already covers any growth; it, or a degenerate pixel aspect,
+        // wouldn't fit an int
+        constexpr double FINITE = 1 << 28;
+        if (!(std::max({std::abs(rod.x1), std::abs(rod.y1), std::abs(rod.x2), std::abs(rod.y2)}) < FINITE) ||
+            !(g.par > 0.25))
+        {
+            return kOfxStatReplyDefault;
+        }
+        // canonical (y up, x scaled by the pixel aspect) <-> core pixels at full scale (y down)
+        const core::rect src{static_cast<int>(std::floor(rod.x1 / g.par)), static_cast<int>(std::floor(-rod.y2)),
+                             static_cast<int>(std::ceil(rod.x2 / g.par)), static_cast<int>(std::ceil(-rod.y1))};
+        const core::rect r =
+            fx.output_bounds(read_params(effect, time, g.f, 1.0, 1.0, g.par), src, core::pixel_scale{});
+        set_rect(property_set(out_args), kOfxImageEffectPropRegionOfDefinition,
+                 OfxRectD{r.x0 * g.par, -static_cast<double>(r.y1), r.x1 * g.par, -static_cast<double>(r.y0)});
+        return kOfxStatOK;
+    }
 
     // the render's time as the core sees it
     static void set_time(core::render_args& args, OfxImageEffectHandle effect, OfxTime time)
@@ -604,6 +639,10 @@ namespace functional_fx_suite::hosts::ofx::plugin
             if (a == kOfxActionCreateInstance || a == kOfxActionInstanceChanged)
             {
                 return update_enabled(effect);
+            }
+            if (a == kOfxImageEffectActionGetRegionOfDefinition)
+            {
+                return region_of_definition(effect, in_args, out_args);
             }
             if (a == kOfxImageEffectActionGetRegionsOfInterest)
             {

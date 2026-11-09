@@ -8,6 +8,13 @@
 
 namespace functional_fx_suite::core
 {
+    // pixels per full-resolution pixel along each axis, below 1 for downsampled renders
+    struct pixel_scale
+    {
+        double x = 1;
+        double y = 1;
+    };
+
     // static description of one effect plus its render entry point
     struct effect
     {
@@ -24,6 +31,9 @@ namespace functional_fx_suite::core
         // distinct non-zero frame offsets render reads through render_args::frame_at, given the current frame number
         // (render_args::frame_number); null when it reads none
         std::vector<int> (*frame_offsets)(const param_values&, int frame) = nullptr;
+        // the output's bounds for a source spanning `src`, in the same pixel space; null when the effect doesn't grow
+        // the layer, and set only with reads_outside, which the hosts rely on to fetch the whole source
+        rect (*output_bounds)(const param_values&, const rect& src, pixel_scale scale) = nullptr;
 
         // frame_offsets, or none when the effect reads no other frames
         [[nodiscard]] std::vector<int> offsets(const param_values& v, int frame) const

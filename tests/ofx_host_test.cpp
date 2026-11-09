@@ -9,6 +9,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdarg>
 #include <format>
@@ -504,6 +505,47 @@ namespace functional_fx_suite::tests::ofx_host_test
         check(max_diff < 1e-5, std::format("{}: OFX render matches core (max diff {})", label, max_diff));
         std::cout << std::format("{}: {} params, max diff vs core {:.2e}, max change vs source {:.3f}\n", label,
                                  e.params.size(), max_diff, changed);
+
+        // an effect growing the layer reports a canonical region of definition grown by its pixels, wider by the pixel
+        // aspect; others leave it to the host
+        prop_set rod;
+        if (reference->output_bounds == nullptr)
+        {
+            check(plugin->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, h, ah, handle(rod)) ==
+                      kOfxStatReplyDefault,
+                  std::format("{}: region of definition is the host's", label));
+        }
+        else
+        {
+            for (auto& [name, p] : e.params)
+            {
+                if (p->type == kOfxParamTypeDouble)
+                {
+                    set_value(handle(p->props), kOfxParamPropDefault, 0, 10.0);
+                    const auto it = std::ranges::find(reference->params, name, &core::param::name);
+                    values.set(static_cast<std::size_t>(it - reference->params.begin()), {10.0, 0, 0});
+                }
+            }
+            constexpr int PAR = 2;
+            const auto source_props = handle(e.clips[kOfxImageEffectSimpleSourceClipName]->props);
+            set_value(source_props, kOfxImagePropPixelAspectRatio, 0, static_cast<double>(PAR));
+            const core::rect r = reference->output_bounds(values, core::rect{0, -H, W / PAR, 0}, core::pixel_scale{});
+            const std::array<double, 4> want{static_cast<double>(r.x0 * PAR), -static_cast<double>(r.y1),
+                                             static_cast<double>(r.x1 * PAR), -static_cast<double>(r.y0)};
+            bool same = r.x0 < 0 &&
+                        plugin->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, h, ah, handle(rod)) == kOfxStatOK;
+            for (int i = 0; same && i < 4; ++i)
+            {
+                double v = 0;
+                same = get_value(handle(rod), kOfxImageEffectPropRegionOfDefinition, i, &v) == kOfxStatOK &&
+                       v == want[static_cast<std::size_t>(i)];
+            }
+            check(same, std::format("{}: region of definition grows by its pixels", label));
+            set_value(source_props, kOfxImageClipPropConnected, 0, 0);
+            check(plugin->mainEntry(kOfxImageEffectActionGetRegionOfDefinition, h, ah, handle(rod)) ==
+                      kOfxStatReplyDefault,
+                  std::format("{}: region of definition without a source is the host's", label));
+        }
         current = nullptr;
     }
 } // namespace functional_fx_suite::tests::ofx_host_test

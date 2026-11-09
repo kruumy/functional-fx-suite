@@ -36,6 +36,7 @@ namespace functional_fx_suite::tests::ae_host_test
         std::map<A_long, A_long> input_times;            // checkout id -> layer time, from pre-render
         std::function<PF_EffectWorld*(A_long)> input_at; // the input layer at a time
         std::vector<A_long> held;                        // other frames checked out and not yet checked in
+        PF_LRect input_request{};                        // the area pre-render last asked of the input layer
     };
 
     static host_state state;
@@ -107,12 +108,13 @@ namespace functional_fx_suite::tests::ae_host_test
     }
 
     // only the input layer is connected
-    static PF_Err checkout_layer(PF_ProgPtr, PF_ParamIndex index, A_long id, const PF_RenderRequest*, A_long time,
+    static PF_Err checkout_layer(PF_ProgPtr, PF_ParamIndex index, A_long id, const PF_RenderRequest* req, A_long time,
                                  A_long, A_u_long, PF_CheckoutResult* result)
     {
         if (index == 0)
         {
             state.input_times[id] = time;
+            state.input_request = req->rect;
         }
         *result = PF_CheckoutResult{};
         result->result_rect = PF_LRect{0, 0, state.output->width, state.output->height};
@@ -292,6 +294,46 @@ namespace functional_fx_suite::tests::ae_host_test
         std::cout << std::format("{} {}-bit: max diff vs core {:.2e}\n", fx.name, max_value == 1.0f ? 32 : 8, max_diff);
     }
 
+    // an effect growing the layer asks for all of the input and grows it by its pixels at the render's downsample
+    static void run_expand(entry_fn entry, PF_InData in, PF_OutData& out, const core::effect& fx)
+    {
+        constexpr int W = 96;
+        constexpr int H = 64;
+        world<PF_PixelFloat> output(W, H);
+        state.output = &output.w;
+        in.width = W * 2;
+        in.height = H * 2;
+        in.downsample_x = in.downsample_y = PF_RationalScale{1, 2};
+        // every slider at 10, after the optional layers the table starts with
+        core::param_values values(fx.params);
+        const std::size_t first = state.params.size() - fx.params.size();
+        for (std::size_t i = 0; i < fx.params.size(); ++i)
+        {
+            if (fx.params[i].kind == core::param_kind::scalar)
+            {
+                state.params[first + i].u.fs_d.value = 10.0;
+                values.set(i, {10.0, 0, 0});
+            }
+        }
+        PF_PreRenderInput pre_in{};
+        pre_in.output_request.rect = PF_LRect{-1000, -1000, W + 1000, H + 1000};
+        PF_PreRenderOutput pre_out{};
+        PF_PreRenderCallbacks pre_cb{};
+        pre_cb.checkout_layer = checkout_layer;
+        PF_PreRenderExtra pre{&pre_in, &pre_out, &pre_cb};
+        check(entry(PF_Cmd_SMART_PRE_RENDER, &in, &out, nullptr, nullptr, &pre) == PF_Err_NONE,
+              std::format("{}: grown pre-render", fx.name));
+        const core::rect want = fx.output_bounds(values, core::rect{0, 0, W, H}, core::pixel_scale{.x = 0.5, .y = 0.5});
+        const PF_LRect& got = pre_out.max_result_rect;
+        check(got.left == want.x0 && got.top == want.y0 && got.right == want.x1 && got.bottom == want.y1 &&
+                  want.x0 < 0 && std::memcmp(&got, &pre_out.result_rect, sizeof(got)) == 0,
+              std::format("{}: grows the layer by its pixels at half resolution", fx.name));
+        const PF_LRect& req = state.input_request;
+        check(req.left < -W && req.top < -H && req.right > 2 * W && req.bottom > 2 * H,
+              std::format("{}: asks for the input past the layer an earlier effect may have grown", fx.name));
+        state.output = nullptr;
+    }
+
     static void run_plugin(const std::string& path)
     {
         HMODULE lib = LoadLibraryA(path.c_str());
@@ -345,6 +387,10 @@ namespace functional_fx_suite::tests::ae_host_test
 
         run_depth<PF_PixelFloat>(entry, in, out, *fx, PF_PixelFormat_ARGB128, 1.0f, 1e-5);
         run_depth<PF_Pixel8>(entry, in, out, *fx, PF_PixelFormat_ARGB32, 255.0f, 0.5 / 255.0 + 1e-4);
+        if (fx->output_bounds != nullptr)
+        {
+            run_expand(entry, in, out, *fx);
+        }
     }
 } // namespace functional_fx_suite::tests::ae_host_test
 

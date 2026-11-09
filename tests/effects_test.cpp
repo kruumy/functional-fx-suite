@@ -140,6 +140,8 @@ namespace functional_fx_suite::tests::effects_test
                           std::format("{}: {} enabled by a non-choice", fx->name, p.name));
                 }
             }
+            check(fx->output_bounds == nullptr || fx->reads_outside,
+                  std::format("{}: grows the layer without reading outside the output", fx->name));
         }
     }
 
@@ -749,6 +751,38 @@ namespace functional_fx_suite::tests::effects_test
         }
     }
 
+    static void edge_extends()
+    {
+        const core::buffer src = card(64, 48);
+        check(run("f_edgeextend", src.view(), [](const core::effect&, core::param_values&) {}).max_diff == 0.0,
+              "f_edgeextend defaults are identity");
+
+        const core::effect& fx = *effects::catalog::find("f_edgeextend");
+        core::param_values values(fx.params);
+        set(fx, values, "expand_left", 16.0);
+        set(fx, values, "expand_up", 6.5);
+        const core::frame f = centered_frame(64, 48);
+        const core::rect grown = fx.output_bounds(values, src.view().bounds, core::pixel_scale{});
+        check(grown.x0 == -16 && grown.y0 == -7 && grown.x1 == 64 && grown.y1 == 48,
+              "f_edgeextend grows left and up by whole pixels, rounding up");
+        const core::rect half =
+            fx.output_bounds(values, core::rect{0, 0, 32, 24}, core::pixel_scale{.x = 0.5, .y = 0.5});
+        check(half.x0 == -8 && half.y0 == -4, "f_edgeextend scales its pixels with a downsampled render");
+        core::buffer out(grown, 4);
+        core::render_args args;
+        args.src = src.view();
+        args.dst = out.view();
+        args.params = &values;
+        args.geometry = f;
+        fx.render(args);
+        const auto same = [&](int x, int y, int sx, int sy) {
+            return std::equal(out.view().at(x, y), out.view().at(x, y) + 4, src.view().at(sx, sy));
+        };
+        check(same(-16, -7, 0, 0) && same(-1, 20, 0, 20) && same(30, -1, 30, 0) && same(63, -7, 63, 0),
+              "f_edgeextend stretches the edge pixels outward");
+        check(same(0, 0, 0, 0) && same(40, 30, 40, 30), "f_edgeextend keeps the source inside");
+    }
+
     // AE's output window outgrows the source when an earlier effect expands the layer, as Motion Tile does
     static void output_past_source()
     {
@@ -756,8 +790,8 @@ namespace functional_fx_suite::tests::effects_test
         for (const core::effect* fx : effects::catalog::all())
         {
             core::param_values values(fx->params);
-            const bool blurs_rays = std::ranges::find(fx->params, std::string_view("blur_rays"), &core::param::name) !=
-                                    fx->params.end();
+            const bool blurs_rays =
+                std::ranges::find(fx->params, std::string_view("blur_rays"), &core::param::name) != fx->params.end();
             if (blurs_rays)
             {
                 set(*fx, values, "blur_rays", 1.0);
@@ -1480,6 +1514,7 @@ int main()
     functional_fx_suite::tests::effects_test::samples();
     functional_fx_suite::tests::effects_test::offset_bounds();
     functional_fx_suite::tests::effects_test::output_past_source();
+    functional_fx_suite::tests::effects_test::edge_extends();
     functional_fx_suite::tests::effects_test::warps();
     functional_fx_suite::tests::effects_test::generators();
     functional_fx_suite::tests::effects_test::flares();

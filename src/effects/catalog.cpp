@@ -11,6 +11,7 @@
 #include "effects/duotone.hpp"
 #include "effects/edgecolorize.hpp"
 #include "effects/edgedetect.hpp"
+#include "effects/edgeextend.hpp"
 #include "effects/edgerays.hpp"
 #include "effects/filmdamage.hpp"
 #include "effects/flicker.hpp"
@@ -58,7 +59,7 @@ namespace functional_fx_suite::effects::catalog
 {
     std::span<const core::effect* const> all()
     {
-        static const std::array<const core::effect*, 52> EFFECTS{
+        static const std::array<const core::effect*, 53> EFFECTS{
             &shake::get(),         &tint::get(),          &rays::get(),         &glow::get(),
             &ultraglow::get(),     &glowaura::get(),      &glowdark::get(),     &glowrings::get(),
             &glint::get(),         &hotspots::get(),      &edgerays::get(),     &vignette::get(),
@@ -71,7 +72,8 @@ namespace functional_fx_suite::effects::catalog
             &pseudocolor::get(),   &psykoblobs::get(),    &psykostripes::get(), &ascii::get(),
             &rollingbar::get(),    &zdefocus::get(),      &lensflare::get(),    &timewarprgb::get(),
             &timedisplace::get(),  &motiondetect::get(),  &freezeframe::get(),  &jitterframes::get(),
-            &reverseedits::get(),  &lensdirt::get(),      &digitize::get(),     &heatdistortion::get()};
+            &reverseedits::get(),  &lensdirt::get(),      &digitize::get(),     &heatdistortion::get(),
+            &edgeextend::get()};
         return EFFECTS;
     }
 
