@@ -31,6 +31,7 @@
 #include "effects/lensflare.hpp"
 #include "effects/mosaic.hpp"
 #include "effects/motiondetect.hpp"
+#include "effects/motionwarp.hpp"
 #include "effects/pixelsort.hpp"
 #include "effects/pseudocolor.hpp"
 #include "effects/psykoblobs.hpp"
@@ -59,7 +60,7 @@ namespace functional_fx_suite::effects::catalog
 {
     std::span<const core::effect* const> all()
     {
-        static const std::array<const core::effect*, 53> EFFECTS{
+        static const std::array<const core::effect*, 54> EFFECTS{
             &shake::get(),         &tint::get(),          &rays::get(),         &glow::get(),
             &ultraglow::get(),     &glowaura::get(),      &glowdark::get(),     &glowrings::get(),
             &glint::get(),         &hotspots::get(),      &edgerays::get(),     &vignette::get(),
@@ -73,7 +74,7 @@ namespace functional_fx_suite::effects::catalog
             &rollingbar::get(),    &zdefocus::get(),      &lensflare::get(),    &timewarprgb::get(),
             &timedisplace::get(),  &motiondetect::get(),  &freezeframe::get(),  &jitterframes::get(),
             &reverseedits::get(),  &lensdirt::get(),      &digitize::get(),     &heatdistortion::get(),
-            &edgeextend::get()};
+            &edgeextend::get(),    &motionwarp::get()};
         return EFFECTS;
     }
 

@@ -1439,6 +1439,56 @@ namespace functional_fx_suite::tests::effects_test
         check(missing.out.view().at(20, 30)[0] == s[0], "f_motiondetect differences a missing frame against black");
     }
 
+    static void motion_warps()
+    {
+        // a soft dot that moved 2 pixels right since the last frame
+        const auto dot = [](int cx) {
+            core::buffer b = gray(core::rect{0, 0, 64, 48}, 0.0f);
+            for (int y = 0; y < 48; ++y)
+            {
+                for (int x = 0; x < 64; ++x)
+                {
+                    b.view().at(x, y)[0] = std::exp(-((x - cx) * (x - cx) + (y - 24) * (y - 24)) / 72.0f);
+                }
+            }
+            return b;
+        };
+        const core::buffer src = dot(26);
+        const core::buffer earlier = dot(24);
+        const std::array<offset_frame, 1> moved{{{-1, earlier.view()}}};
+        const std::array<offset_frame, 1> same{{{-1, src.view()}}};
+        const auto none = [](const core::effect&, core::param_values&) {};
+        const auto red = [&](const run_result& r, int x) {
+            return r.out.view().at(x, 24)[0] - src.view().at(x, 24)[0];
+        };
+
+        check(run("f_motionwarp", src.view(), none).max_diff < 1e-5, "f_motionwarp without the last frame is identity");
+        check(run("f_motionwarp", src.view(), none, 0.5, nullptr, same).max_diff < 1e-5,
+              "f_motionwarp without motion is identity");
+        const run_result push = run("f_motionwarp", src.view(), none, 0.5, nullptr, moved);
+        check(red(push, 32) > 0.05f && red(push, 20) < -0.05f, "f_motionwarp pushes the dot further along its motion");
+        const run_result back = run(
+            "f_motionwarp", src.view(),
+            [](const core::effect& fx, core::param_values& v) { set(fx, v, "direction", 180.0); }, 0.5, nullptr, moved);
+        check(red(back, 32) < -0.05f, "f_motionwarp Direction 180 pushes against the motion");
+        const run_result smear = run(
+            "f_motionwarp", src.view(), [](const core::effect& fx, core::param_values& v) { set(fx, v, "mode", 1.0); },
+            0.5, nullptr, moved);
+        check(red(smear, 20) > 0.02f && red(smear, 32) < -0.02f, "f_motionwarp Smear trails the dot behind it");
+        const run_result slow = run(
+            "f_motionwarp", src.view(),
+            [](const core::effect& fx, core::param_values& v) { set(fx, v, "threshold", 0.1); }, 0.5, nullptr, moved);
+        check(slow.max_diff < 1e-5, "f_motionwarp ignores motion under Threshold");
+        const core::buffer black = solid(src.view().bounds, 0.0f);
+        check(run("f_motionwarp", src.view(), none, 0.5, &black.view(), moved).max_diff < 1e-5,
+              "f_motionwarp black matte removes the warp");
+        const run_result still = run(
+            "f_motionwarp", src.view(),
+            [](const core::effect& fx, core::param_values& v) { set(fx, v, "delay_frames", 0.0); }, 0.5, nullptr,
+            moved);
+        check(still.max_diff < 1e-5 && fetched.empty(), "f_motionwarp Delay Frames 0 reads no frame and is identity");
+    }
+
     // the one frame offset a retime effect reads at `frame`, 0 for the current frame
     static int retime_offset(const core::effect& fx, const core::param_values& v, int frame)
     {
@@ -1521,6 +1571,7 @@ int main()
     functional_fx_suite::tests::effects_test::time_warps();
     functional_fx_suite::tests::effects_test::time_displaces();
     functional_fx_suite::tests::effects_test::motion_detects();
+    functional_fx_suite::tests::effects_test::motion_warps();
     functional_fx_suite::tests::effects_test::retimes();
     return functional_fx_suite::tests::finish("");
 }

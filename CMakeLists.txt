@@ -33,7 +33,7 @@ set(FFX_EFFECTS shake tint rays glow ultraglow glowaura glowdark glowrings glint
     distort distortblur distortchroma distortrgb warpchroma warpfisheye warppuddle zblur blurmocurves
     pseudocolor psykoblobs psykostripes ascii rollingbar zdefocus lensflare timewarprgb
     timedisplace motiondetect freezeframe jitterframes reverseedits lensdirt digitize
-    heatdistortion edgeextend)
+    heatdistortion edgeextend motionwarp)
 
 add_library(${PROJECT_NAME} STATIC
     src/core/blur.cpp
@@ -82,6 +82,7 @@ add_library(${PROJECT_NAME} STATIC
     src/effects/lensflare.cpp
     src/effects/mosaic.cpp
     src/effects/motiondetect.cpp
+    src/effects/motionwarp.cpp
     src/effects/pixelsort.cpp
     src/effects/pseudocolor.cpp
     src/effects/reverseedits.cpp
@@ -187,6 +188,7 @@ if(FFX_BUILD_AE)
         ffx_add_ae_plugin(digitize CATEGORY "Functional Stylize" WIDE_TIME)
         ffx_add_ae_plugin(heatdistortion CATEGORY "Functional Distort" TIME_VARYING)
         ffx_add_ae_plugin(edgeextend CATEGORY "Functional Stylize" EXPAND)
+        ffx_add_ae_plugin(motionwarp CATEGORY "Functional Distort" WIDE_TIME)
         if(FFX_BUILD_TESTS AND WIN32)
             ffx_add_host_test(ae "${FFX_AE_SDK_DIR}/Headers" "${FFX_AE_SDK_DIR}/Headers/SP")
             target_compile_definitions(ae_host_test PRIVATE _WINDOWS)
